@@ -136,6 +136,19 @@ spec:
           # limits:
           #   cpu: "2"
           #   memory: "1024Mi"
+
+    kerberos:
+      principalName: nfs
+      configFiles:
+        volumeSource:
+          configMap:
+            name: rook-ceph-nfs-organization-krb-conf
+      keytabFile:
+        volumeSource:
+          secret:
+            name: rook-ceph-nfs-organization-keytab
+
+
 ```
 
 When the  nfs-ganesha.yaml is created the following will happen:
@@ -213,8 +226,125 @@ The following directories should **not** be shared between SSSD and other contai
 - `/run/dbus`: using the DBus instance from the sidecar caused SSSD errors in testing. SSSD only
   uses DBus for internal communications and creates its own socket as needed.
 
+### Kerberos
+**NOTE:** The principles behind this design have not been validated.
 
-<!-- LINKS -->
+#### Volumes
+Volumes that should be mounted into nfs-ganesha container to support Kerberos:
+1. `keytabFile` volume: use `subPath` on the mount to add the `krb5.keytab` file to `/etc/krb5.keytab`
+2. `configFiles` volume: mount (without `subPath`) to `/etc/krb5.conf.rook/` to allow all files to
+   be mounted (e.g., if a ConfigMap has multiple data items or hostPath has multiple conf.d files)
+
+#### Ganesha config
+Should add configuration. Docs say Active_krb 5 is default true if krb support is compiled in, but
+most examples have this explicitly set.
+Default PrincipalName is "nfs".
+Default for keytab path is reportedly empty. Rook can use `/etc/krb5.keytab`.
+
+Create a new RADOS object named `kerberos` to configure Kerberos.
+```ini
+NFS_KRB5
+{
+   PrincipalName = nfs ; # <-- set from spec.security.kerberos.principalName
+   KeytabPath = /etc/krb5.keytab ;
+   Active_krb5 = YES ;
+}
+```
+
+Add the following line to to the config object (`conf-nfs.${nfs-name}`) to reference the new
+`kerberos` RADOS object. Remove this line from the config object if Kerberos is disabled.
+```
+%url "rados://.nfs/${nfs-name}/kerberos"
+```
+
+These steps can be done from the Rook operator.
+
+#### Kerberos config
+Below is the `/etc/krb5.conf` default from the ceph container:
+```ini
+# To opt out of the system crypto-policies configuration of krb5, remove the
+# symlink at /etc/krb5.conf.d/crypto-policies which will not be recreated.
+includedir /etc/krb5.conf.d/
+
+[logging]
+    default = FILE:/var/log/krb5libs.log
+    kdc = FILE:/var/log/krb5kdc.log
+    admin_server = FILE:/var/log/kadmind.log
+
+[libdefaults]
+    dns_lookup_realm = false
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+    forwardable = true
+    rdns = false
+    pkinit_anchors = FILE:/etc/pki/tls/certs/ca-bundle.crt
+    spake_preauth_groups = edwards25519
+#    default_realm = EXAMPLE.COM
+    default_ccache_name = KEYRING:persistent:%{uid}
+
+[realms]
+# EXAMPLE.COM = {
+#     kdc = kerberos.example.com
+#     admin_server = kerberos.example.com
+# }
+
+[domain_realm]
+# .example.com = EXAMPLE.COM
+# example.com = EXAMPLE.COM
+```
+
+Rook should set its own krb.conf like so. Rook can create `krb5.conf` in an EmptyDir from an init
+container and mount it to the `nfs-ganesha` container in the same fashion as for `nsswitch.conf`.
+Inline comments explain changes made compared to the default file.
+```ini
+includedir /etc/krb5.conf.d/    # assume we want to keep crypto-policies config
+includedir /etc/krb5.conf.rook/ # load configFiles content from users
+
+[logging]
+    default = STDERR # only log to stderr by default
+
+# remove all other defaults (namely 'libdefaults') so that users have full flexibility to set what they want.
+```
+
+**QUESTION:** Do we want to keep this `crypto-policies` file? Do we think users might want to remove
+it? Will overriding `[libdefaults] permitted_enctypes` be sufficient? Will they have to name their
+file `zz-*` to ensure it overwrites `crypto-policies`?
+```
+$# cat /etc/krb5.conf.d/crypto-policies
+[libdefaults]
+permitted_enctypes = aes256-cts-hmac-sha1-96 aes256-cts-hmac-sha384-192 camellia256-cts-cmac aes128-cts-hmac-sha1-96 aes128-cts-hmac-sha256-128 camellia128-cts-cmac
+```
+
+#### Enabling kerberos for an export
+**QUESTION:**
+`sectype` enables Kerberos for an export and is set on the Export definition. I don't see that
+option in `ceph nfs export ...` commands. Do we need to manually add `sectype` to all exports?
+How will CSI do this? Should be part of Ceph API, no?
+
+Example export (with `sectype` manually added):
+```ini
+EXPORT {
+    FSAL {
+        name = "CEPH";
+        user_id = "nfs.my-nfs.1";
+        filesystem = "myfs";
+        secret_access_key = "AQBsPf1iNXTRKBAAtw+D5VzFeAMV4iqbfI0IBA==";
+    }
+    export_id = 1;
+    path = "/";
+    pseudo = "/test";
+    access_type = "RW";
+    squash = "none";
+    attr_expiration_time = 0;
+    security_label = true;
+    protocols = 4;
+    transports = "TCP";
+    sectype = krb5,krb5i,krb5p; # <-- not included in ceph nfs exports by default
+}
+```
+
+
+<!--------------------------------------------- LINKS --------------------------------------------->
 [NFS-Ganesha]: https://github.com/nfs-ganesha/nfs-ganesha/wiki
 [CephFS]: http://docs.ceph.com/docs/master/cephfs/nfs/
 [RGW]: http://docs.ceph.com/docs/master/radosgw/nfs/
@@ -228,3 +358,4 @@ The following directories should **not** be shared between SSSD and other contai
 [Ceph Pool CRD]: (https://github.com/rook/rook/blob/master/Documentation/ceph-pool-crd.md)
 [k8s Deployments]: (https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 [SSSD]: (https://sssd.io)
+[PKINIT]: https://web.mit.edu/kerberos/krb5-devel/doc/admin/pkinit.html#pkinit
