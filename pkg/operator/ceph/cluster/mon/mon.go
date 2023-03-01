@@ -920,7 +920,7 @@ func (c *Cluster) assignMons(mons []*monConfig) error {
 				logger.Infof("mon %q placement using native scheduler", mon.DaemonName)
 			}
 
-			if c.spec.IsStretchCluster() {
+			if (len(c.spec.Mon.Zones) > 0) || c.spec.IsStretchCluster() {
 				if schedule == nil {
 					schedule = &controller.MonScheduleInfo{}
 				}

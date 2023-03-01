@@ -473,7 +473,7 @@ func TestConfigureArbiter(t *testing.T) {
 	c := &Cluster{spec: cephv1.ClusterSpec{
 		Mon: cephv1.MonSpec{
 			StretchCluster: &cephv1.StretchClusterSpec{
-				Zones: []cephv1.StretchClusterZoneSpec{
+				Zones: []cephv1.MonZoneSpec{
 					{Name: "a", Arbiter: true},
 					{Name: "b"},
 					{Name: "c"},
@@ -530,7 +530,7 @@ func TestFindAvailableZoneForStretchedMon(t *testing.T) {
 	c := &Cluster{spec: cephv1.ClusterSpec{
 		Mon: cephv1.MonSpec{
 			StretchCluster: &cephv1.StretchClusterSpec{
-				Zones: []cephv1.StretchClusterZoneSpec{
+				Zones: []cephv1.MonZoneSpec{
 					{Name: "a", Arbiter: true},
 					{Name: "b"},
 					{Name: "c"},
@@ -623,12 +623,12 @@ func TestStretchMonVolumeClaimTemplate(t *testing.T) {
 		{"default template", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{VolumeClaimTemplate: defaultTemplate}}}, args{&monConfig{Zone: "z1"}}, defaultTemplate},
 		{"default template with 3 zones", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
 			VolumeClaimTemplate: defaultTemplate,
-			StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.StretchClusterZoneSpec{{Name: "z1"}, {Name: "z2"}, {Name: "z3"}}}}}},
+			StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.MonZoneSpec{{Name: "z1"}, {Name: "z2"}, {Name: "z3"}}}}}},
 			args{&monConfig{Zone: "z1"}},
 			defaultTemplate},
 		{"overridden template", fields{cephv1.ClusterSpec{Mon: cephv1.MonSpec{
 			VolumeClaimTemplate: defaultTemplate,
-			StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.StretchClusterZoneSpec{{Name: "z1", VolumeClaimTemplate: zoneTemplate}, {Name: "z2"}, {Name: "z3"}}}}}},
+			StretchCluster:      &cephv1.StretchClusterSpec{Zones: []cephv1.MonZoneSpec{{Name: "z1", VolumeClaimTemplate: zoneTemplate}, {Name: "z2"}, {Name: "z3"}}}}}},
 			args{&monConfig{Zone: "z1"}},
 			zoneTemplate},
 	}
@@ -665,7 +665,7 @@ func TestArbiterPlacement(t *testing.T) {
 	c := &Cluster{spec: cephv1.ClusterSpec{
 		Mon: cephv1.MonSpec{
 			StretchCluster: &cephv1.StretchClusterSpec{
-				Zones: []cephv1.StretchClusterZoneSpec{
+				Zones: []cephv1.MonZoneSpec{
 					{Name: "a", Arbiter: true},
 					{Name: "b"},
 					{Name: "c"},
@@ -701,7 +701,7 @@ func TestCheckIfArbiterReady(t *testing.T) {
 		spec: cephv1.ClusterSpec{
 			Mon: cephv1.MonSpec{
 				StretchCluster: &cephv1.StretchClusterSpec{
-					Zones: []cephv1.StretchClusterZoneSpec{
+					Zones: []cephv1.MonZoneSpec{
 						{Name: "a", Arbiter: true},
 						{Name: "b"},
 						{Name: "c"},
