@@ -501,7 +501,7 @@ type MonSpec struct {
 	AllowMultiplePerNode bool `json:"allowMultiplePerNode,omitempty"`
 	// Zones are specified when we want to provide zonal awareness to mons
 	// +optional
-	Zones *MonZonesSpec `json:"zones,omitempty"`
+	Zones []MonZoneSpec `json:"zones,omitempty"`
 	// StretchCluster is the stretch cluster specification
 	// +optional
 	StretchCluster *StretchClusterSpec `json:"stretchCluster,omitempty"`
@@ -537,12 +537,6 @@ type MonZoneSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	VolumeClaimTemplate *v1.PersistentVolumeClaim `json:"volumeClaimTemplate,omitempty"`
-}
-type MonZonesSpec struct {
-	// Zones is the list of zones
-	// +optional
-	// +nullable
-	Zones []MonZoneSpec `json:"zones,omitempty"`
 }
 
 // MgrSpec represents options to configure a ceph mgr

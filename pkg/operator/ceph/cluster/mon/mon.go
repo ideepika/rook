@@ -664,6 +664,7 @@ func scheduleMonitor(c *Cluster, mon *monConfig) (*apps.Deployment, error) {
 	// monitors are configured to use persistent volumes. the pvcName is set to
 	// the non-empty name of the PVC only when the PVC is created as a result of
 	// this call to the scheduler.
+	if mon.Zone
 	if c.monVolumeClaimTemplate(mon) == nil {
 		d.Spec.Template.Spec.Volumes = append(d.Spec.Template.Spec.Volumes,
 			controller.DaemonVolumesDataHostPath(mon.DataPathMap)...)
@@ -735,6 +736,7 @@ func (c *Cluster) getMonPlacement(zone string) cephv1.Placement {
 			return p
 		}
 	}
+
 	// If not the arbiter, or the arbiter placement is not specified, fall back to the same placement used for other mons
 	return cephv1.GetMonPlacement(c.spec.Placement)
 }
@@ -919,7 +921,6 @@ func (c *Cluster) assignMons(mons []*monConfig) error {
 			} else {
 				logger.Infof("mon %q placement using native scheduler", mon.DaemonName)
 			}
-
 			if (len(c.spec.Mon.Zones) > 0) || c.spec.IsStretchCluster() {
 				if schedule == nil {
 					schedule = &controller.MonScheduleInfo{}
@@ -945,12 +946,16 @@ func (c *Cluster) assignMons(mons []*monConfig) error {
 }
 
 func (c *Cluster) monVolumeClaimTemplate(mon *monConfig) *v1.PersistentVolumeClaim {
-	if !c.spec.IsStretchCluster() {
-		return c.spec.Mon.VolumeClaimTemplate
-	}
 
-	// If a stretch cluster, a zone can override the template from the default.
-	for _, zone := range c.spec.Mon.StretchCluster.Zones {
+	if c.spec.IsStretchCluster() || len(c.spec.Mon.Zones) > 0 {
+		// If a stretch cluster, a zone can override the template from the default.
+	var Zones
+	if (c.spec.IsStretchCluster()) {
+		Zones = c.spec.Mon.StretchCluster.Zones
+	} else {
+		Zones = c.spec.Mon.Zones
+	}
+	for _, zone := range Zones {
 		if zone.Name == mon.Zone {
 			if zone.VolumeClaimTemplate != nil {
 				// Found an override for the volume claim template in the zone
@@ -959,7 +964,9 @@ func (c *Cluster) monVolumeClaimTemplate(mon *monConfig) *v1.PersistentVolumeCla
 			break
 		}
 	}
-	// Return the default template since one wasn't found in the zone
+	}
+
+	// Return the default template since one wasn't found in the zone or zone was not specified
 	return c.spec.Mon.VolumeClaimTemplate
 }
 
