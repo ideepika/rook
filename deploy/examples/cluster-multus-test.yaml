@@ -28,7 +28,7 @@ metadata:
 spec:
   dataDirHostPath: /var/lib/rook
   cephVersion:
-    image: quay.io/ceph/ceph:v17
+    image: dexter816/ceph:master_tracing
     allowUnsupported: true
   mon:
     count: 1

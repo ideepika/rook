@@ -15,6 +15,8 @@ metadata:
 data:
   config: |
     [global]
+    jaeger_tracing_enable = true
+    jaeger_agent_port = 6831
     osd_pool_default_size = 1
     mon_warn_on_pool_no_redundancy = false
     bdev_flock_retry = 20
@@ -28,8 +30,11 @@ metadata:
   namespace: rook-ceph # namespace:cluster
 spec:
   dataDirHostPath: /var/lib/rook
+  annotations:
+      osd:
+        sidecar.jaegertracing.io/inject: "true"
   cephVersion:
-    image: quay.io/ceph/ceph:v17
+    image: dexter816/ceph:master_tracing
     allowUnsupported: true
   mon:
     count: 1
@@ -39,6 +44,9 @@ spec:
     allowMultiplePerNode: true
   dashboard:
     enabled: true
+  network:
+    # enable host networking
+    provider: host
   crashCollector:
     disable: true
   storage:
