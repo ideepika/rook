@@ -333,6 +333,12 @@ cephClusterSpec:
       requests:
         cpu: "100m"
         memory: "100Mi"
+    rgwopslog:
+      limits:
+        memory: "60Mi"
+      requests:
+        cpu: "100m"
+        memory: "60Mi"
     cleanup:
       limits:
         memory: "1Gi"

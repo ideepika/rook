@@ -807,6 +807,31 @@ func LogCollectorContainer(daemonID, ns string, c cephv1.ClusterSpec) *v1.Contai
 	}
 }
 
+// LogCollectorContainer rotate logs
+func RGWOpsLogContainer(daemonID, ns string, c cephv1.ClusterSpec) *v1.Container {
+
+	// TODO: opsLogFileName := strings.Join("ops-log")
+
+	return &v1.Container{
+		Name: RGWOpsLog,
+		Command: []string{
+			"/bin/bash",
+			"-x", // Print commands and their arguments as they are executed
+			"-e", // Exit immediately if a command exits with a non-zero status.
+			"-m", // Terminal job control, allows job to be terminated by SIGTERM
+			"-c", // Command to run
+			fmt.Sprintf("tail -n+1 -F", path.Join(config.VarLogCephDir, "ops-log-ceph-client.rgw.my.store.a.log")),
+		},
+		Image:           c.CephVersion.Image,
+		ImagePullPolicy: GetContainerImagePullPolicy(c.CephVersion.ImagePullPolicy),
+		VolumeMounts:    DaemonVolumeMounts(config.NewDatalessDaemonDataPathMap(ns, c.DataDirHostPath), "", c.DataDirHostPath),
+		SecurityContext: PodSecurityContext(),
+		Resources:       cephv1.GetRGWOpsLogResources(c.Resources),
+		// We need a TTY for the bash job control (enabled by -m)
+		TTY: true,
+	}
+}
+
 // CreateExternalMetricsEndpoints creates external metric endpoint
 func createExternalMetricsEndpoints(namespace string, monitoringSpec cephv1.MonitoringSpec, ownerInfo *k8sutil.OwnerInfo) (*v1.Endpoints, error) {
 	labels := AppLabels("rook-ceph-mgr", namespace)

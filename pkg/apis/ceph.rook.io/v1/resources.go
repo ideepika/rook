@@ -37,6 +37,8 @@ const (
 	ResourcesKeyCrashCollector = "crashcollector"
 	// ResourcesKeyLogCollector represents the name of resource in the CR for the log
 	ResourcesKeyLogCollector = "logcollector"
+	// ResourcesKeyRGWOpsLog represents the name of resource in the CR for the log
+	ResourcesKeyRGWOpsLog = "rgwopsLog"
 	// ResourcesKeyRBDMirror represents the name of resource in the CR for the rbd mirror
 	ResourcesKeyRBDMirror = "rbdmirror"
 	// ResourcesKeyFilesystemMirror represents the name of resource in the CR for the filesystem mirror
@@ -93,6 +95,11 @@ func GetCrashCollectorResources(p ResourceSpec) v1.ResourceRequirements {
 // GetLogCollectorResources returns the placement for the crash daemon
 func GetLogCollectorResources(p ResourceSpec) v1.ResourceRequirements {
 	return p[ResourcesKeyLogCollector]
+}
+
+// GetRGWOpsLogResources returns the placement for the crash daemon
+func GetRGWOpsLogResources(p ResourceSpec) v1.ResourceRequirements {
+	return p[ResourcesKeyRGWOpsLog]
 }
 
 // GetCleanupResources returns the placement for the cleanup job
