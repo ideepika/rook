@@ -2315,6 +2315,21 @@ type ObjectStoreUserSpec struct {
 	// +optional
 	// +kubebuilder:validation:XValidation:message="accountRef is immutable",rule="self == oldSelf"
 	AccountRef ObjectStoreUserAccountRef `json:"accountRef,omitzero"`
+	// Placement defines the placement target and storage class tags for the user.
+	// +optional
+	// +nullable
+	Placement *ObjectUserPlacementSpec `json:"placement,omitempty"`
+}
+
+// ObjectUserPlacementSpec defines the default placement target and storage class tags for a user.
+type ObjectUserPlacementSpec struct {
+	// DefaultPlacementID specifies the default placement target for the user (equivalent to --placement-id).
+	// +optional
+	DefaultPlacementID string `json:"defaultPlacementId,omitempty"`
+	// StorageClassTags defines the storage class tags associated with the user's placement (equivalent to --placement-tags).
+	// +optional
+	// +listType=set
+	StorageClassTags []string `json:"storageClassTags,omitempty"`
 }
 
 // ObjectStoreUserAccountRef is a reference to a CephObjectStoreAccount

@@ -649,6 +649,17 @@ func generateUserConfig(user *cephv1.CephObjectStoreUser) (*admin.User, error) {
 
 	userConfig.OpMask = opMask
 
+	if user.Spec.Placement != nil {
+		userConfig.DefaultPlacement = user.Spec.Placement.DefaultPlacementID
+		if len(user.Spec.Placement.StorageClassTags) > 0 {
+			tags := make([]interface{}, len(user.Spec.Placement.StorageClassTags))
+			for i, t := range user.Spec.Placement.StorageClassTags {
+				tags[i] = t
+			}
+			userConfig.PlacementTags = tags
+		}
+	}
+
 	return userConfig, nil
 }
 
@@ -1034,5 +1045,29 @@ func isUserSync(targetUser, liveUser *admin.User) bool {
 		return false
 	}
 
+	if targetUser.DefaultPlacement != liveUser.DefaultPlacement {
+		return false
+	}
+
+	if !placementTagsEqual(targetUser.PlacementTags, liveUser.PlacementTags) {
+		return false
+	}
+
+	return true
+}
+
+func placementTagsEqual(a, b []interface{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[interface{}]struct{}, len(a))
+	for _, v := range a {
+		set[v] = struct{}{}
+	}
+	for _, v := range b {
+		if _, ok := set[v]; !ok {
+			return false
+		}
+	}
 	return true
 }
