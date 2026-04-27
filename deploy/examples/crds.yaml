@@ -15237,6 +15237,20 @@ spec:
                   minItems: 0
                   type: array
                   x-kubernetes-list-type: set
+                placement:
+                  description: Placement defines the default placement target and storage class tags for the user.
+                  nullable: true
+                  properties:
+                    defaultPlacementId:
+                      description: DefaultPlacementID specifies the default placement target for the user (equivalent to --placement-id).
+                      type: string
+                    storageClassTags:
+                      description: StorageClassTags defines the storage class tags associated with the user's placement (equivalent to --placement-tags).
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
+                  type: object
                 quotas:
                   description: ObjectUserQuotaSpec can be used to set quotas for the object store user to limit their usage. See the [Ceph docs](https://docs.ceph.com/en/latest/radosgw/admin/?#quota-management) for more
                   nullable: true
