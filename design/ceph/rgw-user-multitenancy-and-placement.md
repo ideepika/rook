@@ -4,7 +4,7 @@
 
 ## Summary
 
-This document proposes extending the `CephObjectStoreUser` CRD with three new
+This document proposes extending the `CephObjectStoreUser` CRD with four new
 optional spec fields:
 
 - `tenant` — assigns the RGW user to a named tenant, enabling bucket name
@@ -13,9 +13,14 @@ optional spec fields:
   controlling which data/metadata pools newly created buckets land in.
 - `defaultStorageClass` — sets the user's default storage class for objects,
   applied on top of `defaultPlacement`.
+- `placementTags` — restricts which zonegroup placement targets this user may
+  create buckets in, based on tags carried by those targets. Independent of
+  `defaultPlacement`/`defaultStorageClass`: it is a bucket-creation
+  authorization list, not storage-class or default-placement metadata.
 
-A fourth field, `placementTags`, is deferred to follow-up work (see
-[Future work](#future-work)).
+Tagging the placement *targets* themselves — the enabling half of this
+mechanism — has no Rook API yet and stays out of scope; see
+[Future work](#future-work).
 
 ### Why tenant and placement are covered in the same document
 
@@ -62,11 +67,20 @@ placement.
   call (see [RGW Tenant User ID Format](#rgw-tenant-user-id-format)).
 - Add `spec.defaultPlacement` and `spec.defaultStorageClass`, applied via
   `CreateUser`/`ModifyUser` in the RGW Admin Ops API.
+- Add `spec.placementTags` to `CephObjectStoreUser`: a bucket-creation
+  authorization list, not storage-class metadata and not scoped to
+  `defaultPlacement` — when a zonegroup placement target carries tags, only
+  users holding a matching tag may create buckets there, and untagged
+  targets stay open to everyone. Applied via `CreateUser`/`ModifyUser`, now
+  that go-ceph v0.41.0 (released 2026-08-11) carries client support
+  ([go-ceph#1290](https://github.com/ceph/go-ceph/pull/1290)) — see
+  [Placement tags](#placement-tags).
 - Require `defaultPlacement` to be set whenever `defaultStorageClass` is
   set, since RGW cannot apply a storage class without a placement target.
 - Treat `tenant` as immutable (RGW does not support moving a user between
   tenants; `radosgw-admin user rename` rejects tenant changes).
-- Treat `defaultPlacement` and `defaultStorageClass` as mutable.
+- Treat `defaultPlacement`, `defaultStorageClass`, and `placementTags` as
+  mutable.
 - Leave placement validation to RGW: the serving RGW validates
   `default-placement` against the live zonegroup on every create/modify and
   rejects unknown targets with `EINVAL`. The operator surfaces that failure
@@ -118,6 +132,12 @@ Ceph (e.g. clearing a user's placement, once
 [tracker 79090](https://tracker.ceph.com/issues/79090) lands) may only
 change CR semantics once rook's minimum supported Ceph includes it — never
 behind a runtime version gate.
+
+`placementTags` does not have this problem: `RGWOp_User_Modify::execute`
+handles `placement-tags` identically on Squid and Tentacle — same
+non-empty guard, same comma-split parsing — verified against the
+`v19.2.3` and `v20.2.0` tags of `src/rgw/driver/rados/rgw_rest_user.cc`.
+One wire encoding, no `cephver` branch needed.
 
 ## Background
 
@@ -201,6 +221,24 @@ type ObjectStoreUserSpec struct {
     // +kubebuilder:validation:MinLength=1
     // +kubebuilder:validation:MaxLength=2048
     DefaultStorageClass string `json:"defaultStorageClass,omitempty"`
+
+    // PlacementTags restricts which placement targets this user may create
+    // buckets in: when a zonegroup placement target carries tags, RGW allows
+    // bucket creation there only when one of the user's placement tags
+    // matches; targets without tags remain usable by every user. Tags are
+    // not storage-class related and apply independently of
+    // DefaultPlacement/DefaultStorageClass. RGW does not validate tag values
+    // against any known-tags list at create/modify time — an unmatched or
+    // misspelled tag is stored as given and only becomes visibly inert (or
+    // effective) once a placement target's own tags are compared against it
+    // at bucket-creation time. If this field is absent the controller does
+    // not manage the user's placement tags.
+    // +optional
+    // +listType=atomic
+    // +kubebuilder:validation:MinItems=1
+    // +kubebuilder:validation:MaxItems=64
+    // +kubebuilder:validation:XValidation:message="placementTags entries cannot contain \",\"",rule="self.all(t, !t.contains(','))"
+    PlacementTags []string `json:"placementTags,omitempty"`
 }
 ```
 
@@ -227,33 +265,64 @@ Notes on the validation shape, from review:
   from this field; such names are ambiguous in RGW's own placement-rule
   syntax regardless, and a follow-up may tighten `PoolPlacementSpec.Name`
   to match.
+- `placementTags` rejects entries containing `,` at admission. Both sides of
+  the wire use `,` as an unescaped delimiter: go-ceph's `[]string` encoder
+  comma-joins the list into the single `placement-tags` query value
+  (`rgw/admin/utils.go`, `getReflect`, with the comment "the RGW admin ops
+  API expects a single comma-separated value here, not repeated params"),
+  and RGW comma-splits it back apart with `get_str_list(placement_tags_str,
+  ",", ...)` in `RGWOp_User_Modify::execute`. A tag containing a literal `,`
+  would silently split into two tags client- and server-side with no error;
+  the CEL rule rejects it before it can happen. `MinItems=1`/`MaxItems=64`
+  are Rook-side bounds — RGW imposes neither.
 
 ### Field removal (unmanaged semantics)
 
-An absent `defaultPlacement`/`defaultStorageClass` means **unmanaged**: the
-controller neither writes nor compares the corresponding RGW user property.
-Removing a previously-set field stops management and leaves the last-applied
-value in place on the RGW user; it does not revert the user to the
-zonegroup default. A pre-existing RGW user adopted by a CR keeps whatever
-placement it already had, whether it was set through this field or outside
-of Rook. A user who wants zonegroup-default behavior sets `defaultPlacement`
-to the default target's name explicitly (note this pins the user to that
-target; it does not track later changes to the zonegroup default).
+An absent `defaultPlacement`/`defaultStorageClass`/`placementTags` means
+**unmanaged**: the controller neither writes nor compares the corresponding
+RGW user property. Removing a previously-set field stops management and
+leaves the last-applied value in place on the RGW user; it does not revert
+the user to the zonegroup default (or, for `placementTags`, to no tags). A
+pre-existing RGW user adopted by a CR keeps whatever placement/tags it
+already had, whether set through these fields or outside of Rook. A user who
+wants zonegroup-default behavior sets `defaultPlacement` to the default
+target's name explicitly (note this pins the user to that target; it does
+not track later changes to the zonegroup default).
 
 Revert-on-removal is not implementable today, on any supported Ceph, through
-any client: go-ceph never transmits empty parameter values
-([go-ceph#1307](https://github.com/ceph/go-ceph/issues/1307)), and RGW's
-admin ops modify handler ignores empty `default-placement` values anyway
-([tracker 79090](https://tracker.ceph.com/issues/79090)); `radosgw-admin`
-shares the same guard. Those issues track the upstream fixes. Per
-[Ceph version invariance](#ceph-version-invariance), Rook may adopt
-revert-on-removal semantics only once its minimum supported Ceph and a
-released go-ceph both support clearing — as an explicit, documented
-behavior change.
+any client, for any of the three fields: go-ceph never transmits empty
+parameter values ([go-ceph#1307](https://github.com/ceph/go-ceph/issues/1307)),
+and RGW's admin ops modify handler ignores empty `default-placement` and
+`placement-tags` values alike
+([tracker 79090](https://tracker.ceph.com/issues/79090) covers
+`default-placement`/`default-storage-class`; the same
+`if (!placement_tags_str.empty())` guard exists for `placement-tags` in
+`RGWOp_User_Modify::execute` on both Squid and Tentacle, and should be
+folded into that tracker issue or filed alongside it before implementation);
+`radosgw-admin` shares the same guards. Those issues track the upstream
+fixes. Per [Ceph version invariance](#ceph-version-invariance), Rook may
+adopt revert-on-removal semantics only once its minimum supported Ceph and a
+released go-ceph both support clearing — as an explicit, documented behavior
+change.
 
 The unmanaged contract is also what protects brownfield users: reconcile
 must not churn `ModifyUser` calls (or worse, rewrite state) for users whose
-placement was configured out-of-band and whose CRs never mention it.
+placement or tags were configured out-of-band and whose CRs never mention
+them.
+
+### Placement tags
+
+`spec.placementTags` covers only the RGW *user's* `PlacementTags` — the
+list a user must partially match against a placement target's own tags to
+be allowed to create buckets there. It does not cover tagging the
+placement *targets themselves* (`radosgw-admin zonegroup placement modify
+--placement-id=<id> --tags=<tag1,tag2>`), which is zonegroup configuration,
+not user configuration, and has no Rook CRD field today (`PoolPlacementSpec`
+carries no `tags`; see [Future work](#future-work)). Consequently, in an
+all-Rook-managed topology, setting `placementTags` on a user has no
+observable effect until the relevant placement targets are tagged
+out-of-band with `radosgw-admin`. Deployments with externally/manually
+managed zonegroup placement (including the tags) can use the field as-is.
 
 ### Example CR
 
@@ -269,25 +338,32 @@ spec:
   tenant: tenantA
   defaultPlacement: hot-tier
   defaultStorageClass: STANDARD_IA
+  placementTags:
+    - tenant-a
 ```
 
 ## Status
 
 The controller echoes applied state into the CR status after a successful
-reconcile: the effective `default_placement` and `default_storage_class`
-read back from user info. A placement or storage class rejected by RGW
-(`EINVAL` from server-side validation) fails the reconcile and surfaces the
-RGW error in the CR status; this is the intended validation UX, replacing
-operator-side pre-validation. A tenant mismatch between spec and the live
-user (see the addressing backstop above) is likewise a surfaced reconcile
-error, never a silent adoption.
+reconcile: the effective `default_placement`, `default_storage_class`, and
+`placement_tags` read back from user info. A placement or storage class
+rejected by RGW (`EINVAL` from server-side validation) fails the reconcile
+and surfaces the RGW error in the CR status; this is the intended validation
+UX, replacing operator-side pre-validation. A tenant mismatch between spec
+and the live user (see the addressing backstop above) is likewise a surfaced
+reconcile error, never a silent adoption. `placementTags` has no equivalent
+failure mode to surface: RGW accepts any tag list at modify time (see
+[Placement tags](#placement-tags)), so a CR with a tag that matches no
+placement target still reconciles `Ready` — status echoes the tags RGW
+stored, not whether they match anything.
 
 ## Multisite
 
-RGW user metadata — including `default_placement` and
-`default_storage_class` — is realm-scoped and replicates to every zone via
-metadata sync. Placement *targets*, however, are zonegroup-scoped, and their
-pools are zone-local. Consequences this design accepts and documents:
+RGW user metadata — including `default_placement`, `default_storage_class`,
+and `placement_tags` — is realm-scoped and replicates to every zone via
+metadata sync. Placement *targets*, and their own tags, are zonegroup-scoped,
+and their pools are zone-local. Consequences this design accepts and
+documents:
 
 - Validation happens at apply time, by the RGW serving the referenced
   object store, against **its** zonegroup only.
@@ -368,11 +444,11 @@ orphaned. Enforcement is the spec-level CEL transition rule in
 tenant-mismatch check described in
 [RGW Tenant User ID Format](#rgw-tenant-user-id-format).
 
-`defaultPlacement` and `defaultStorageClass` are mutable — RGW supports
-changing a user's default placement and storage class at any time; changes
-only affect future bucket/object creation, not existing buckets/objects.
-Removal of either field is covered by
-[Field removal](#field-removal-unmanaged-semantics).
+`defaultPlacement`, `defaultStorageClass`, and `placementTags` are mutable —
+RGW supports changing a user's default placement, storage class, and
+placement tags at any time; changes only affect future bucket/object
+creation, not existing buckets/objects. Removal of any of the three fields
+is covered by [Field removal](#field-removal-unmanaged-semantics).
 
 ## Interaction with `AccountRef`
 
@@ -387,21 +463,15 @@ already transmits one) and is listed under [Future work](#future-work).
 
 ## Future work
 
-- **`placementTags`** (deferred from this design): RGW `placement_tags` is a
-  bucket-creation authorization list — a user may only create buckets in a
-  tagged placement target when one of the user's tags matches. It is
-  deferred because (a) its enabling half, tags on zonegroup placement
-  targets, has no Rook API (`PoolPlacementSpec` would need a `tags` field);
-  (b) client support requires a `go.mod` bump — Rook currently pins go-ceph
-  v0.40.0, which predates `PlacementTags` support
-  ([go-ceph#1290](https://github.com/ceph/go-ceph/pull/1290), merged
-  2026-07-09 and released in go-ceph v0.41.0 on 2026-08-11 — the dependency
-  itself is released, only Rook's pin is behind); and (c) tags cannot be
-  cleared through the admin ops API once set
-  ([tracker 79090](https://tracker.ceph.com/issues/79090)). When revisited:
-  the field is named `placementTags` (it is not scoped to the default
-  placement), ships together with `PoolPlacementSpec.tags`, and gates on
-  bumping Rook's go-ceph pin to v0.41.0+.
+- **`PoolPlacementSpec.tags`** (Rook-managed placement *target* tagging):
+  this design lets an operator set `spec.placementTags` on a
+  `CephObjectStoreUser`, but tagging the zonegroup placement targets those
+  tags are matched against is not part of it — `PoolPlacementSpec` (on both
+  `CephObjectStore` and `CephObjectZone`) has no `tags` field, so target
+  tagging must be done out-of-band with `radosgw-admin zonegroup placement
+  modify --tags ...` (which Rook's zonegroup reconcile preserves; see
+  [Placement tags](#placement-tags)). A follow-up field would let Rook
+  manage both sides of the mechanism.
 - **Revert-on-removal** for the placement fields, once
   [tracker 79090](https://tracker.ceph.com/issues/79090) and
   [go-ceph#1307](https://github.com/ceph/go-ceph/issues/1307) are in Rook's
