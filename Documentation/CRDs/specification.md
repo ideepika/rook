@@ -10799,6 +10799,20 @@ CephExporterSpec
 <p>Ceph exporter configuration</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>tracing</code><br/>
+<em>
+<a href="#ceph.rook.io/v1.TracingSpec">
+TracingSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Tracing sends OpenTelemetry traces of slow requests to a tracing backend</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="ceph.rook.io/v1.MultiClusterServiceSpec">MultiClusterServiceSpec
@@ -16407,6 +16421,108 @@ KafkaEndpointSpec
 <td>
 <em>(Optional)</em>
 <p>Spec of Kafka endpoint</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ceph.rook.io/v1.TracingSpec">TracingSpec
+</h3>
+<p>
+(<em>Appears on:</em><a href="#ceph.rook.io/v1.MonitoringSpec">MonitoringSpec</a>)
+</p>
+<div>
+<p>TracingSpec configures OpenTelemetry traces of slow requests. The OSDs and RGWs send the
+traces themselves, over OTLP/HTTP, to a backend such as Jaeger, Grafana Tempo or an
+OpenTelemetry Collector. Only requests slower than the thresholds are traced.
+Requires a Ceph version with slow-request tracing.</p>
+</div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>enabled</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Enabled turns the traces on. When false, Rook turns them off.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>endpoint</code><br/>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Endpoint is the OTLP/HTTP URL that the spans are posted to,
+such as <a href="http://jaeger-collector.observability.svc:4318/v1/traces">http://jaeger-collector.observability.svc:4318/v1/traces</a></p>
+</td>
+</tr>
+<tr>
+<td>
+<code>osdSlowOpThreshold</code><br/>
+<em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>OSDSlowOpThreshold is the duration above which an OSD op is traced. Default is 1s.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>rgwSlowRequestThreshold</code><br/>
+<em>
+<a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RGWSlowRequestThreshold is the duration above which an RGW request is traced, together
+with its slow OSD ops. Default is the OSD threshold; a higher value leaves the slow OSD ops
+of the requests in between without the request above them.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>onlyClientRequests</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>OnlyClientRequests limits the OSD traces to the ops of requests traced by RGW, leaving out
+RGW background work, RBD and CephFS. Default is false.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>maxTracesPerSecond</code><br/>
+<em>
+uint32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MaxTracesPerSecond caps the traces each OSD and RGW exports per second. Default is 10 per
+OSD and 100 per RGW.</p>
 </td>
 </tr>
 </tbody>

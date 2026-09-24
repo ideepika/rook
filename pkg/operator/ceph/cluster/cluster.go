@@ -701,6 +701,15 @@ func (c *cluster) updateConfigStoreFromCRD() error {
 	if err := monStore.SetAllMultiple(cephConfigFromSecret); err != nil {
 		return err
 	}
+	// before cephConfig, so that options set there win
+	tracing, err := tracingConfig(c.Spec.Monitoring.Tracing)
+	if err == nil {
+		err = monStore.SetAllMultiple(tracing)
+	}
+	if err != nil {
+		// an older Ceph does not know the options; that should not stop the rest of the reconcile
+		log.NamespacedWarning(c.Namespace, logger, "failed to configure tracing, which needs a Ceph version with slow-request tracing. %v", err)
+	}
 	if err := monStore.SetAllMultiple(c.Spec.CephConfig); err != nil {
 		return err
 	}

@@ -113,6 +113,12 @@ spec:
       # Time to wait before sending requests again to exporter server (seconds)
       # Corresponds to --stats-period Ceph exporter flag
       statsPeriodSeconds: 5
+    # OpenTelemetry traces of slow requests, sent by the OSDs and RGWs to a tracing backend.
+    # Requires a Ceph version with slow-request tracing. See monitoring/jaeger.yaml for a test backend.
+    # tracing:
+    #   enabled: true
+    #   endpoint: http://rook-ceph-jaeger.rook-ceph.svc:4318/v1/traces
+    #   osdSlowOpThreshold: 1s
   network:
     connections:
       # Whether to encrypt the data in transit across the wire to prevent eavesdropping the data on the network.

@@ -1,0 +1,54 @@
+# A single Jaeger v2 that keeps the traces in memory, for trying out the slow-request traces
+# described in Documentation/Storage-Configuration/Monitoring/ceph-tracing.md.
+# The traces are lost when the pod restarts; use Jaeger with a storage backend, Grafana Tempo
+# or an OpenTelemetry Collector for anything longer lived.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rook-ceph-jaeger
+  namespace: rook-ceph # namespace:cluster
+  labels:
+    app: rook-ceph-jaeger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rook-ceph-jaeger
+  template:
+    metadata:
+      labels:
+        app: rook-ceph-jaeger
+    spec:
+      containers:
+        - name: jaeger
+          image: docker.io/jaegertracing/jaeger:2.21.0
+          ports:
+            - name: otlp-http
+              containerPort: 4318
+            - name: ui
+              containerPort: 16686
+          readinessProbe:
+            httpGet:
+              path: /
+              port: ui
+          resources:
+            limits:
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rook-ceph-jaeger
+  namespace: rook-ceph # namespace:cluster
+  labels:
+    app: rook-ceph-jaeger
+spec:
+  selector:
+    app: rook-ceph-jaeger
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: ui
+      port: 16686
+      targetPort: ui

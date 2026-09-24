@@ -56,6 +56,13 @@ If this value is empty, each pod will get an ephemeral directory to store their 
     * `exporter`: Ceph exporter metrics config.
         * `perfCountersPrioLimit`: Specifies which performance counters are exported. Corresponds to `--prio-limit` Ceph exporter flag. `0` - all counters are exported, default is `5`.
         * `statsPeriodSeconds`: Time to wait before sending requests again to exporter server (seconds). Corresponds to `--stats-period` Ceph exporter flag. Default is `5`.
+    * `tracing`: [OpenTelemetry traces of slow requests](../../Storage-Configuration/Monitoring/ceph-tracing.md). Requires a Ceph version with slow-request tracing.
+        * `enabled`: Whether the OSDs and RGWs export traces. When set to `false`, Rook turns the traces off.
+        * `endpoint`: The OTLP/HTTP URL that the spans are posted to, such as `http://rook-ceph-jaeger.rook-ceph.svc:4318/v1/traces`. Required when `enabled` is `true`.
+        * `osdSlowOpThreshold`: OSD ops that take at least this long are traced. Default is `1s`.
+        * `rgwSlowRequestThreshold`: RGW requests that take at least this long are traced, with their slow OSD ops in the same trace. Default is the `osdSlowOpThreshold`; a higher value leaves the slow OSD ops of the requests in between without the request above them.
+        * `onlyClientRequests`: Trace only the OSD ops of requests traced by RGW, leaving out RGW's background work, RBD and CephFS. Default is `false`.
+        * `maxTracesPerSecond`: The most traces each OSD and RGW exports per second; slow ops and requests beyond it are counted but not traced. Default is `10` per OSD and `100` per RGW.
 * `network`: For the network settings for the cluster, refer to the [network configuration settings](#network-configuration-settings)
 * `mon`: contains mon related options [mon settings](#mon-settings)
 For more details on the mons and when to choose a number other than `3`, see the [mon health doc](../../Storage-Configuration/Advanced/ceph-mon-health.md).

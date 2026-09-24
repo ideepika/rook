@@ -23,3 +23,6 @@
   reported in `status.info`. Removing either field stops Rook from managing it and leaves the last applied value in place
   on the RGW user, except that changing `defaultPlacement` without a `defaultStorageClass` resets the storage class to
   the new placement target's default.
+- CephCluster gained `spec.monitoring.tracing`, which sends OpenTelemetry traces of slow OSD ops and RGW requests
+  to an OTLP backend such as Jaeger. It requires a Ceph version with slow-request tracing. See the
+  [tracing guide](Documentation/Storage-Configuration/Monitoring/ceph-tracing.md).

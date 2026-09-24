@@ -3205,6 +3205,44 @@ spec:
                       maximum: 65535
                       minimum: 0
                       type: integer
+                    tracing:
+                      description: Tracing sends OpenTelemetry traces of slow requests to a tracing backend
+                      nullable: true
+                      properties:
+                        enabled:
+                          description: Enabled turns the traces on. When false, Rook turns them off.
+                          type: boolean
+                        endpoint:
+                          description: |-
+                            Endpoint is the OTLP/HTTP URL that the spans are posted to,
+                            such as http://jaeger-collector.observability.svc:4318/v1/traces
+                          pattern: ^https?://
+                          type: string
+                        maxTracesPerSecond:
+                          description: |-
+                            MaxTracesPerSecond caps the traces each OSD and RGW exports per second. Default is 10 per
+                            OSD and 100 per RGW.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        onlyClientRequests:
+                          description: |-
+                            OnlyClientRequests limits the OSD traces to the ops of requests traced by RGW, leaving out
+                            RGW background work, RBD and CephFS. Default is false.
+                          type: boolean
+                        osdSlowOpThreshold:
+                          description: OSDSlowOpThreshold is the duration above which an OSD op is traced. Default is 1s.
+                          type: string
+                        rgwSlowRequestThreshold:
+                          description: |-
+                            RGWSlowRequestThreshold is the duration above which an RGW request is traced, together
+                            with its slow OSD ops. Default is the OSD threshold; a higher value leaves the slow OSD ops
+                            of the requests in between without the request above them.
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                        - message: endpoint is required when tracing is enabled
+                          rule: '!has(self.enabled) || !self.enabled || has(self.endpoint)'
                   type: object
                 network:
                   description: Network related configuration

@@ -628,6 +628,49 @@ type MonitoringSpec struct {
 	// Ceph exporter configuration
 	// +optional
 	Exporter *CephExporterSpec `json:"exporter,omitempty"`
+
+	// Tracing sends OpenTelemetry traces of slow requests to a tracing backend
+	// +optional
+	// +nullable
+	Tracing *TracingSpec `json:"tracing,omitempty"`
+}
+
+// TracingSpec configures OpenTelemetry traces of slow requests. The OSDs and RGWs send the
+// traces themselves, over OTLP/HTTP, to a backend such as Jaeger, Grafana Tempo or an
+// OpenTelemetry Collector. Only requests slower than the thresholds are traced.
+// Requires a Ceph version with slow-request tracing.
+// +kubebuilder:validation:XValidation:message="endpoint is required when tracing is enabled",rule="!has(self.enabled) || !self.enabled || has(self.endpoint)"
+type TracingSpec struct {
+	// Enabled turns the traces on. When false, Rook turns them off.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Endpoint is the OTLP/HTTP URL that the spans are posted to,
+	// such as http://jaeger-collector.observability.svc:4318/v1/traces
+	// +kubebuilder:validation:Pattern=`^https?://`
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// OSDSlowOpThreshold is the duration above which an OSD op is traced. Default is 1s.
+	// +optional
+	OSDSlowOpThreshold *metav1.Duration `json:"osdSlowOpThreshold,omitempty"`
+
+	// RGWSlowRequestThreshold is the duration above which an RGW request is traced, together
+	// with its slow OSD ops. Default is the OSD threshold; a higher value leaves the slow OSD ops
+	// of the requests in between without the request above them.
+	// +optional
+	RGWSlowRequestThreshold *metav1.Duration `json:"rgwSlowRequestThreshold,omitempty"`
+
+	// OnlyClientRequests limits the OSD traces to the ops of requests traced by RGW, leaving out
+	// RGW background work, RBD and CephFS. Default is false.
+	// +optional
+	OnlyClientRequests bool `json:"onlyClientRequests,omitempty"`
+
+	// MaxTracesPerSecond caps the traces each OSD and RGW exports per second. Default is 10 per
+	// OSD and 100 per RGW.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxTracesPerSecond *uint32 `json:"maxTracesPerSecond,omitempty"`
 }
 
 // MetricsTLSSpec defines TLS for the MGR Prometheus metrics endpoint.
