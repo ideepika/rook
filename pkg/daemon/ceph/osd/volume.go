@@ -498,8 +498,9 @@ func (a *OsdAgent) allowRawMode(context *clusterd.Context) (bool, error) {
 	// by default assume raw mode
 	allowRawMode := true
 
-	// ceph-volume raw mode does not support encryption yet
-	if a.storeConfig.EncryptedDevice {
+	// ceph-volume raw mode needs the encryption key from the caller, so encrypted host-based
+	// OSDs can only use raw mode when the key is kept in a KMS
+	if a.storeConfig.EncryptedDevice && !hostKMSEnabled() {
 		logger.Debug("won't use raw mode since encryption is enabled")
 		allowRawMode = false
 	}
@@ -532,8 +533,8 @@ func isSafeToUseRawMode(device *DeviceOsdIDEntry) bool {
 		return false
 	}
 
-	// ceph-volume raw mode does not support encryption yet
-	if device.Config.EncryptedDevice {
+	// ceph-volume raw mode needs the encryption key from the caller, see allowRawMode()
+	if device.Config.EncryptedDevice && !hostKMSEnabled() {
 		logger.Debugf("won't use raw mode for disk %q since encryption is enabled", device.Config.Name)
 		return false
 	}
@@ -653,8 +654,32 @@ func (a *OsdAgent) initializeDevicesRawMode(context *clusterd.Context, devices *
 			// assign the device class specific to the device
 			immediateExecuteArgs = a.appendDeviceClassArg(device, immediateExecuteArgs)
 
+			encrypted := a.storeConfig.EncryptedDevice || device.Config.EncryptedDevice
+			var hostKey *hostOSDKey
+			if encrypted {
+				var err error
+				hostKey, err = newHostOSDKey(context, a.clusterInfo, a.nodeName, name)
+				if err != nil {
+					return nil, err
+				}
+				immediateExecuteArgs = append(immediateExecuteArgs, encryptedFlag)
+				// ceph-volume reads the key from the environment only
+				if err := os.Setenv(oposd.CephVolumeEncryptedKeyEnvVarName, hostKey.key); err != nil {
+					return nil, errors.Wrap(err, "failed to set the encryption key for ceph-volume")
+				}
+			}
+
 			// execute ceph-volume with the device
 			op, err := context.Executor.ExecuteCommandWithCombinedOutput(baseCommand, immediateExecuteArgs...)
+			if encrypted {
+				// The OSD listing that follows must not see the key, see GetCephVolumeRawOSDs()
+				_ = os.Unsetenv(oposd.CephVolumeEncryptedKeyEnvVarName)
+				if err == nil {
+					err = hostKey.commit(op)
+				} else {
+					hostKey.abort()
+				}
+			}
 			if err != nil {
 				cvLogFilePath := path.Join(cephLogDir, "ceph-volume.log")
 

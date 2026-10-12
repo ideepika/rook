@@ -65,44 +65,10 @@ func dmsetupVersion(context *clusterd.Context) error {
 }
 
 func setKEKinEnv(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo) error {
-	// KMS details are passed by the Operator as env variables in the pod
-	// The token if any is mounted in the provisioner pod as an env variable so the secrets lib will
-	// pick it up
-	clusterSpec := &v1.ClusterSpec{Security: v1.ClusterSecuritySpec{KeyManagementService: v1.KeyManagementServiceSpec{ConnectionDetails: kms.ConfigEnvsToMapString()}}}
-
-	// The ibm key protect library does not read any environment variables, so we must set the
-	// service api key (coming from the secret mounted as an environment variable) in the KMS
-	// connection details. These details are used to build the client connection
-	if clusterSpec.Security.KeyManagementService.IsIBMKeyProtectKMS() {
-		ibmServiceApiKey := os.Getenv(kms.IbmKeyProtectServiceApiKey)
-		if ibmServiceApiKey == "" {
-			return errors.Errorf("ibm key protect %q environment variable is not set", kms.IbmKeyProtectServiceApiKey)
-		}
-		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.IbmKeyProtectServiceApiKey] = ibmServiceApiKey
+	kmsConfig, err := kmsConfigFromEnv(context, clusterInfo)
+	if err != nil {
+		return err
 	}
-
-	if clusterSpec.Security.KeyManagementService.IsKMIPKMS() {
-		// the following files will be mounted to the osd pod.
-		byteValue, err := os.ReadFile(path.Join(kms.EtcKmipDir, kms.KmipCACertFileName))
-		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", kms.KmipCACertFileName)
-		}
-		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.KmipCACert] = string(byteValue)
-
-		byteValue, err = os.ReadFile(path.Join(kms.EtcKmipDir, kms.KmipClientCertFileName))
-		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", kms.KmipClientCertFileName)
-		}
-		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.KmipClientCert] = string(byteValue)
-
-		byteValue, err = os.ReadFile(path.Join(kms.EtcKmipDir, kms.KmipClientKeyFileName))
-		if err != nil {
-			return errors.Wrapf(err, "failed to read file %q", kms.KmipClientKeyFileName)
-		}
-		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.KmipClientKey] = string(byteValue)
-	}
-
-	kmsConfig := kms.NewConfig(context, clusterSpec, clusterInfo)
 
 	// Fetch the KEK
 	kek, err := kmsConfig.GetSecret(os.Getenv(oposd.PVCNameEnvVarName))
@@ -122,6 +88,48 @@ func setKEKinEnv(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo)
 
 	logger.Debug("successfully set kek to env variable")
 	return nil
+}
+
+// kmsConfigFromEnv builds the KMS config from the env variables the operator sets in the prepare pod
+func kmsConfigFromEnv(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo) (*kms.Config, error) {
+	// KMS details are passed by the Operator as env variables in the pod
+	// The token if any is mounted in the provisioner pod as an env variable so the secrets lib will
+	// pick it up
+	clusterSpec := &v1.ClusterSpec{Security: v1.ClusterSecuritySpec{KeyManagementService: v1.KeyManagementServiceSpec{ConnectionDetails: kms.ConfigEnvsToMapString()}}}
+
+	// The ibm key protect library does not read any environment variables, so we must set the
+	// service api key (coming from the secret mounted as an environment variable) in the KMS
+	// connection details. These details are used to build the client connection
+	if clusterSpec.Security.KeyManagementService.IsIBMKeyProtectKMS() {
+		ibmServiceApiKey := os.Getenv(kms.IbmKeyProtectServiceApiKey)
+		if ibmServiceApiKey == "" {
+			return nil, errors.Errorf("ibm key protect %q environment variable is not set", kms.IbmKeyProtectServiceApiKey)
+		}
+		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.IbmKeyProtectServiceApiKey] = ibmServiceApiKey
+	}
+
+	if clusterSpec.Security.KeyManagementService.IsKMIPKMS() {
+		// the following files will be mounted to the osd pod.
+		byteValue, err := os.ReadFile(path.Join(kms.EtcKmipDir, kms.KmipCACertFileName))
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to read file %q", kms.KmipCACertFileName)
+		}
+		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.KmipCACert] = string(byteValue)
+
+		byteValue, err = os.ReadFile(path.Join(kms.EtcKmipDir, kms.KmipClientCertFileName))
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to read file %q", kms.KmipClientCertFileName)
+		}
+		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.KmipClientCert] = string(byteValue)
+
+		byteValue, err = os.ReadFile(path.Join(kms.EtcKmipDir, kms.KmipClientKeyFileName))
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to read file %q", kms.KmipClientKeyFileName)
+		}
+		clusterSpec.Security.KeyManagementService.ConnectionDetails[kms.KmipClientKey] = string(byteValue)
+	}
+
+	return kms.NewConfig(context, clusterSpec, clusterInfo), nil
 }
 
 func setLUKSLabelAndSubsystem(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo, disk string) error {

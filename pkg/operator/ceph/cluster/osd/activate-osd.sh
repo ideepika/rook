@@ -19,8 +19,9 @@ CV_MODE="$ROOK_CV_MODE"
 DEVICE="${ROOK_BLOCK_PATH:-}"
 ENCRYPTED="$ROOK_ENCRYPTED_DEVICE"
 
-# copy the latest lockbox keys to the keyring file as they might have been rotated
-if [ "$ENCRYPTED" == "true" ] ; then
+# copy the latest lockbox keys to the keyring file as they might have been rotated; only lvm mode
+# OSDs keep their keys in the monitors
+if [ "$ENCRYPTED" == "true" ] && [ "$CV_MODE" == "lvm" ] ; then
 	if [ -z "${ROOK_OSD_UUID:-}" ]; then
 		echo "required environment variable ROOK_OSD_UUID is not set" >&2
 		exit 1

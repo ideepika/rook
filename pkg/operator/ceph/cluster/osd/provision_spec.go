@@ -134,6 +134,9 @@ func (c *Cluster) provisionPodTemplateSpec(osdProps osdProperties, restart v1.Re
 		// If not running on PVC we mount the rootfs of the host to validate the presence of the LVM package
 		rootFSVolume := v1.Volume{Name: "rootfs", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/"}}}
 		volumes = append(volumes, rootFSVolume)
+		if c.hostOSDsUseKMS(osdProps) {
+			volumes = append(volumes, c.kmsVolumes()...)
+		}
 	}
 
 	if len(volumes) == 0 {
@@ -311,6 +314,11 @@ func (c *Cluster) provisionOSDContainer(osdProps osdProperties, copyBinariesMoun
 	} else {
 		// If not running on PVC we mount the rootfs of the host to validate the presence of the LVM package
 		volumeMounts = append(volumeMounts, v1.VolumeMount{Name: "rootfs", MountPath: "/rootfs", ReadOnly: true})
+		// Encrypted host-based OSDs store their keys in the KMS from the prepare pod
+		if c.hostOSDsUseKMS(osdProps) {
+			volumeMounts = append(volumeMounts, c.kmsVolumeMounts()...)
+			envVars = append(envVars, kms.ConfigToEnvVar(c.spec)...)
+		}
 	}
 
 	// Add OSD ID as environment variables.
@@ -411,4 +419,50 @@ func provisionJobLabels(namespace string) map[string]string {
 		k8sutil.AppAttr:     prepareAppName,
 		k8sutil.ClusterAttr: namespace,
 	}
+}
+
+// hostOSDsUseKMS reports whether encrypted host-based OSDs keep their keys in the KMS
+func (c *Cluster) hostOSDsUseKMS(osdProps osdProperties) bool {
+	if osdProps.onPVC() || !c.spec.Security.KeyManagementService.IsEnabled() {
+		return false
+	}
+	if osdProps.storeConfig.EncryptedDevice {
+		return true
+	}
+	for _, device := range osdProps.devices {
+		if device.Config[config.EncryptedDeviceKey] == "true" {
+			return true
+		}
+	}
+	return false
+}
+
+// kmsVolumes returns the volumes for the TLS files of Vault and KMIP
+func (c *Cluster) kmsVolumes() []v1.Volume {
+	kmsSpec := c.spec.Security.KeyManagementService
+	volumes := []v1.Volume{}
+	if kmsSpec.IsVaultKMS() {
+		volume, _ := kms.VaultVolumeAndMount(kmsSpec.ConnectionDetails, "")
+		volumes = append(volumes, volume)
+	}
+	if kmsSpec.IsKMIPKMS() {
+		volume, _ := kms.KMIPVolumeAndMount(kmsSpec.TokenSecretName)
+		volumes = append(volumes, volume)
+	}
+	return volumes
+}
+
+// kmsVolumeMounts returns the mounts for the volumes of kmsVolumes()
+func (c *Cluster) kmsVolumeMounts() []v1.VolumeMount {
+	kmsSpec := c.spec.Security.KeyManagementService
+	mounts := []v1.VolumeMount{}
+	if kmsSpec.IsVaultKMS() {
+		_, mount := kms.VaultVolumeAndMount(kmsSpec.ConnectionDetails, "")
+		mounts = append(mounts, mount)
+	}
+	if kmsSpec.IsKMIPKMS() {
+		_, mount := kms.KMIPVolumeAndMount(kmsSpec.TokenSecretName)
+		mounts = append(mounts, mount)
+	}
+	return mounts
 }
