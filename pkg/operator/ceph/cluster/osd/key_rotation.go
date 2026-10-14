@@ -144,7 +144,7 @@ func (c *Cluster) getKeyRotationPodTemplateSpec(osdProps osdProperties, osd OSDI
 		devices = append(devices, encryptionBlockDestinationCopy(devicesBasePath, bluestoreWalName))
 	}
 
-	if c.spec.Security.KeyManagementService.IsVaultKMS() {
+	if c.spec.Security.KeyManagementService.IsVaultKMS() && c.spec.Security.KeyManagementService.IsTLSEnabled() {
 		volumeTLS, volumeMountTLS := kms.VaultVolumeAndMount(c.spec.Security.KeyManagementService.ConnectionDetails, "")
 		volumes = append(volumes, volumeTLS)
 		volumeMounts = append(volumeMounts, volumeMountTLS)
