@@ -131,15 +131,23 @@ func HostOSDKeyNames(ctx context.Context, clusterdContext *clusterd.Context, nam
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to list encrypted osd deployments")
 	}
-	c := &Cluster{context: clusterdContext, clusterInfo: &cephclient.ClusterInfo{Namespace: namespace, Context: ctx}}
 	names := []string{}
-	for i := range deployments.Items {
-		d := &deployments.Items[i]
-		osd, err := c.getOSDInfo(d)
+	for _, d := range deployments.Items {
+		container, err := findOSDContainer(d.Spec.Template.Spec.Containers)
 		if err != nil {
-			return nil, err
+			log.NamespacedWarning(namespace, logger, "not deleting the encryption key of OSD deployment %q. %v", d.Name, err)
+			continue
 		}
-		osd.Encrypted = true
+		// the env parsing of getOSDInfo() fails on more than this needs, and queries the nodes
+		osd := OSDInfo{Encrypted: true}
+		for _, env := range container.Env {
+			switch env.Name {
+			case "ROOK_OSD_UUID":
+				osd.UUID = env.Value
+			case "ROOK_CV_MODE":
+				osd.CVMode = env.Value
+			}
+		}
 		_, onPVC := d.Labels[OSDOverPVCLabelKey]
 		if hostOSDUsesKMS(osd, onPVC) && osd.UUID != "" {
 			names = append(names, osd.UUID)
