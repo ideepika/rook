@@ -119,6 +119,11 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 			return nil, errors.Wrap(err, "failed to get osd tree for destroyed slots")
 		}
 		destroyedOSDIds = tree.GetDestroyedIDs()
+
+		// before any device is prepared, which would delete a pending key of the device
+		if err := recoverHostOSDKeys(context, a.clusterInfo, a.nodeName); err != nil {
+			return nil, err
+		}
 	}
 
 	// Idempotency check, if the device list is empty devices have been prepared already
@@ -179,9 +184,6 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 			rawOsds, err = GetCephVolumeRawOSDs(context, a.clusterInfo, a.clusterInfo.FSID, block, "", "", false, false, a.devices)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to get device already provisioned by ceph-volume raw")
-			}
-			if err := recoverHostOSDKeys(context, a.clusterInfo, a.nodeName, rawOsds); err != nil {
-				return nil, err
 			}
 			osds = appendOSDInfo(osds, slices.DeleteFunc(rawOsds, func(o oposd.OSDInfo) bool { return slices.Contains(destroyedOSDIds, o.ID) }))
 		}
@@ -250,11 +252,6 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 	if !isEncrypted {
 		rawOsds, err = ensurePreparedDevicesListed(context, a.clusterInfo, rawOsds, preparedRawDevices, a.devices)
 		if err != nil {
-			return nil, err
-		}
-	}
-	if !a.pvcBacked {
-		if err := recoverHostOSDKeys(context, a.clusterInfo, a.nodeName, rawOsds); err != nil {
 			return nil, err
 		}
 	}
@@ -666,7 +663,11 @@ func (a *OsdAgent) initializeDevicesRawMode(context *clusterd.Context, devices *
 			var hostKey *hostOSDKey
 			if encrypted {
 				var err error
-				hostKey, err = newHostOSDKey(context, a.clusterInfo, a.nodeName, name)
+				disk := device.DeviceInfo
+				if disk == nil {
+					disk = &sys.LocalDisk{Name: name}
+				}
+				hostKey, err = newHostOSDKey(context, a.clusterInfo, a.nodeName, disk)
 				if err != nil {
 					return nil, err
 				}

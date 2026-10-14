@@ -19,6 +19,7 @@ package osd
 import (
 	"testing"
 
+	"github.com/rook/rook/pkg/util/sys"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,11 +37,27 @@ func TestGetEncryptedBlockPathRawPrepare(t *testing.T) {
 	assert.Equal(t, "/dev/mapper/ceph-8f3d6a1e-2b7c-4e59-9a0d-1c2b3d4e5f60-loop0-block-dmcrypt", getEncryptedBlockPath(op, "block-dmcrypt"))
 }
 
-func TestDeviceFromMapper(t *testing.T) {
-	uuid := "8f3d6a1e-2b7c-4e59-9a0d-1c2b3d4e5f60"
-	assert.Equal(t, "loop0", deviceFromMapper("/dev/mapper/ceph-"+uuid+"-loop0-block-dmcrypt"))
-	assert.Equal(t, "nvme0n1p2", deviceFromMapper("/dev/mapper/ceph-"+uuid+"-nvme0n1p2-block-dmcrypt"))
-	assert.Equal(t, "", deviceFromMapper("/dev/mapper/ceph-"+uuid+"-loop0"))
-	assert.Equal(t, "", deviceFromMapper("/dev/loop0"))
-	assert.Equal(t, "pending-node1-loop0", pendingKeyName("node1", "/dev/loop0"))
+func TestPendingKeyName(t *testing.T) {
+	disk := &sys.LocalDisk{Name: "sdb", DevLinks: "/dev/disk/by-path/pci-0000:00:05.0-scsi-0:0:0:1 /dev/disk/by-id/wwn-0x5000c500a1b2c3d4 /dev/disk/by-uuid/a4ed20f4 /dev/disk/by-id/lvm-pv-uuid-TYz5Lw"}
+	name := pendingKeyName("node1", disk)
+	assert.Len(t, name, len("pending-node1-")+16)
+
+	// a reboot that renames the device keeps the name
+	renamed := *disk
+	renamed.Name = "sdc"
+	assert.Equal(t, name, pendingKeyName("node1", &renamed))
+
+	// another device has another name
+	other := &sys.LocalDisk{Name: "sdb", DevLinks: "/dev/disk/by-id/wwn-0x5000c500ffffffff"}
+	assert.NotEqual(t, name, pendingKeyName("node1", other))
+
+	// a loop device has no by-id link
+	loop := &sys.LocalDisk{Name: "loop0", DevLinks: "/dev/disk/by-diskseq/12 /dev/disk/by-loop-ref/\\x2fvar\\x2flib\\x2fosd0.img"}
+	assert.NotEqual(t, pendingKeyName("node1", &sys.LocalDisk{Name: "loop0"}), pendingKeyName("node1", loop))
+}
+
+func TestOSDUUIDFromLUKS(t *testing.T) {
+	assert.Equal(t, "64f279de-45a7-4372-aa11-d52d13db22c6", osdUUIDFromLUKS("LUKS header information\nVersion:       \t2\nLabel:         \t(no label)\nSubsystem:     \tceph_fsid=64f279de-45a7-4372-aa11-d52d13db22c6\n"))
+	assert.Equal(t, "", osdUUIDFromLUKS("Label:  \t(no label)\nSubsystem:     \t(no subsystem)\n"))
+	assert.Equal(t, "", osdUUIDFromLUKS("Subsystem: ceph_fsid=not-a-uuid\n"))
 }
