@@ -693,7 +693,12 @@ func (a *OsdAgent) initializeDevicesRawMode(context *clusterd.Context, devices *
 				return nil, errors.Wrapf(err, "failed to run ceph-volume raw command. %s", op) // fail return here as validation provided by ceph-volume
 			}
 			logger.Infof("%v", op)
-			preparedDevices = append(preparedDevices, deviceArg)
+			if encrypted {
+				// "ceph-volume raw list" reports an encrypted OSD by its mapper, not by the device
+				preparedDevices = append(preparedDevices, getEncryptedBlockPath(op, oposd.DmcryptBlockType))
+			} else {
+				preparedDevices = append(preparedDevices, deviceArg)
+			}
 		} else {
 			logger.Infof("skipping device %q with osd %d already configured", deviceArg, device.Data)
 		}
