@@ -120,14 +120,7 @@ func (c *Cluster) provisionPodTemplateSpec(osdProps osdProperties, restart v1.Re
 		if osdProps.encrypted {
 			// If a KMS is configured we populate
 			if c.spec.Security.KeyManagementService.IsEnabled() {
-				if c.spec.Security.KeyManagementService.IsVaultKMS() {
-					volumeTLS, _ := kms.VaultVolumeAndMount(c.spec.Security.KeyManagementService.ConnectionDetails, "")
-					volumes = append(volumes, volumeTLS)
-				}
-				if c.spec.Security.KeyManagementService.IsKMIPKMS() {
-					volumeKMIP, _ := kms.KMIPVolumeAndMount(c.spec.Security.KeyManagementService.TokenSecretName)
-					volumes = append(volumes, volumeKMIP)
-				}
+				volumes = append(volumes, c.kmsVolumes()...)
 			}
 		}
 	} else {
@@ -300,15 +293,8 @@ func (c *Cluster) provisionOSDContainer(osdProps osdProperties, copyBinariesMoun
 		if osdProps.encrypted {
 			// If a KMS is configured we populate volume mounts and env variables
 			if c.spec.Security.KeyManagementService.IsEnabled() {
-				if c.spec.Security.KeyManagementService.IsVaultKMS() {
-					_, volumeMountsTLS := kms.VaultVolumeAndMount(c.spec.Security.KeyManagementService.ConnectionDetails, "")
-					volumeMounts = append(volumeMounts, volumeMountsTLS)
-				}
+				volumeMounts = append(volumeMounts, c.kmsVolumeMounts()...)
 				envVars = append(envVars, kms.ConfigToEnvVar(c.spec)...)
-				if c.spec.Security.KeyManagementService.IsKMIPKMS() {
-					_, volmeMountsKMIP := kms.KMIPVolumeAndMount(c.spec.Security.KeyManagementService.TokenSecretName)
-					volumeMounts = append(volumeMounts, volmeMountsKMIP)
-				}
 			}
 		}
 	} else {
@@ -437,11 +423,12 @@ func (c *Cluster) hostOSDsUseKMS(osdProps osdProperties) bool {
 	return false
 }
 
-// kmsVolumes returns the volumes for the TLS files of Vault and KMIP
+// kmsVolumes returns the volumes for the TLS files of Vault and KMIP. A Vault volume without TLS
+// files would have no sources, which the API server may reject.
 func (c *Cluster) kmsVolumes() []v1.Volume {
 	kmsSpec := c.spec.Security.KeyManagementService
 	volumes := []v1.Volume{}
-	if kmsSpec.IsVaultKMS() {
+	if kmsSpec.IsVaultKMS() && kmsSpec.IsTLSEnabled() {
 		volume, _ := kms.VaultVolumeAndMount(kmsSpec.ConnectionDetails, "")
 		volumes = append(volumes, volume)
 	}
@@ -456,7 +443,7 @@ func (c *Cluster) kmsVolumes() []v1.Volume {
 func (c *Cluster) kmsVolumeMounts() []v1.VolumeMount {
 	kmsSpec := c.spec.Security.KeyManagementService
 	mounts := []v1.VolumeMount{}
-	if kmsSpec.IsVaultKMS() {
+	if kmsSpec.IsVaultKMS() && kmsSpec.IsTLSEnabled() {
 		_, mount := kms.VaultVolumeAndMount(kmsSpec.ConnectionDetails, "")
 		mounts = append(mounts, mount)
 	}
