@@ -35,6 +35,10 @@ fi
 # kernel name changed since prepare
 DEVICE=""
 for dev in $(lsblk --noheadings --paths --list --output NAME,TYPE | awk '$2 == "disk" || $2 == "part" || $2 == "loop" || $2 == "mpath" {print $1}'); do
+	# a path of a multipath device shows the same header, but must be opened through the mpath
+	if [ -n "$(ls "/sys/class/block/$(basename "$dev")/holders" 2>/dev/null)" ]; then
+		continue
+	fi
 	if cryptsetup luksDump "$dev" 2>/dev/null | grep -q "ceph_fsid=$ROOK_OSD_UUID"; then
 		DEVICE="$dev"
 		break
