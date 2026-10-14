@@ -672,32 +672,17 @@ func (c *ClusterController) deleteOSDEncryptionKeyFromKMS(currentCluster *cephv1
 	}
 
 	// Initialize the KMS code
-	kmsConfig := kms.NewConfig(c.context, &currentCluster.Spec, clusterObj.ClusterInfo)
+	kmsConfig, err := kms.NewOperatorConfig(ctx, c.context, &currentCluster.Spec, clusterObj.ClusterInfo)
+	if err != nil {
+		return errors.Wrap(err, "failed to configure the kms to delete the secrets")
+	}
 	kmsConfig.ClusterInfo.Context = ctx
-
-	// If token auth is used by the KMS we set it as an env variable
-	if currentCluster.Spec.Security.KeyManagementService.IsTokenAuthEnabled() && currentCluster.Spec.Security.KeyManagementService.IsVaultKMS() {
-		err := kms.SetTokenToEnvVar(ctx, c.context, currentCluster.Spec.Security.KeyManagementService.TokenSecretName, kmsConfig.Provider, currentCluster.Namespace)
-		if err != nil {
-			return errors.Wrapf(err, "failed to fetch kms token secret %q", currentCluster.Spec.Security.KeyManagementService.TokenSecretName)
-		}
-	}
-
-	// We need to fetch the IBM_KP_SERVICE_API_KEY value and KMIP kms related values too.
-	if currentCluster.Spec.Security.KeyManagementService.IsIBMKeyProtectKMS() || currentCluster.Spec.Security.KeyManagementService.IsKMIPKMS() {
-		// This will validate the connection details again and will add the IBM_KP_SERVICE_API_KEY to the spec and
-		// token details required for KMIP kms are added too.
-		err = kms.ValidateConnectionDetails(ctx, c.context, &currentCluster.Spec.Security.KeyManagementService, currentCluster.Namespace)
-		if err != nil {
-			return errors.Wrap(err, "failed to validate kms connection details to delete the secret")
-		}
-	}
 
 	// The keys of host-based OSDs open the disks, so they are only deleted when the cleanup
 	// policy says the data is destroyed anyway
 	keyNames := []string{}
 	if currentCluster.Spec.CleanupPolicy.HasDataDirCleanPolicy() {
-		keyNames, err = osd.HostOSDKeyNames(ctx, c.context.Clientset, currentCluster.Namespace)
+		keyNames, err = osd.HostOSDKeyNames(ctx, c.context, currentCluster.Namespace)
 		if err != nil {
 			return err
 		}

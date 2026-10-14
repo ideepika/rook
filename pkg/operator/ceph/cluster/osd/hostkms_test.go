@@ -106,12 +106,16 @@ func TestRemoveMonCopyOfHostOSDKey(t *testing.T) {
 
 func TestHostOSDKeyNames(t *testing.T) {
 	deployment := func(name, uuid, cvMode string, onPVC bool) *appsv1.Deployment {
-		env := []v1.EnvVar{{Name: "ROOK_OSD_UUID", Value: uuid}, {Name: "ROOK_CV_MODE", Value: cvMode}}
+		env := []v1.EnvVar{{Name: "ROOK_OSD_UUID", Value: uuid}, {Name: "ROOK_CV_MODE", Value: cvMode}, {Name: "ROOK_BLOCK_PATH", Value: "/dev/x"}}
 		if onPVC {
 			env = append(env, v1.EnvVar{Name: "ROOK_PVC_BACKED_OSD", Value: "true"})
 		}
+		labels := map[string]string{"app": AppName, encrypted: "true", OsdIdLabelKey: name[len(name)-1:]}
+		if onPVC {
+			labels[OSDOverPVCLabelKey] = "pvc"
+		}
 		return &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Labels: map[string]string{"app": AppName, encrypted: "true"}},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Labels: labels},
 			Spec: appsv1.DeploymentSpec{Template: v1.PodTemplateSpec{Spec: v1.PodSpec{
 				Containers: []v1.Container{{Name: "osd", Env: env}},
 			}}},
@@ -123,7 +127,7 @@ func TestHostOSDKeyNames(t *testing.T) {
 		deployment("rook-ceph-osd-2", "uuid-pvc-raw", "raw", true),
 	)
 
-	names, err := HostOSDKeyNames(context.TODO(), clientset, "ns")
+	names, err := HostOSDKeyNames(context.TODO(), &clusterd.Context{Clientset: clientset}, "ns")
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"uuid-host-raw"}, names)
 }

@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/pkg/errors"
+	"github.com/rook/rook/pkg/clusterd"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	"github.com/rook/rook/pkg/daemon/ceph/osd/kms"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
@@ -31,7 +32,6 @@ import (
 	"github.com/rook/rook/pkg/util/log"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -102,11 +102,9 @@ func (c *Cluster) removeMonCopyOfHostOSDKey(osd OSDInfo) error {
 
 	// The mons may hold the only copy stored under the fsid, if the prepare job failed to move the
 	// key in the KMS to the fsid
-	kmsConfig := kms.NewConfig(c.context, &c.spec, c.clusterInfo)
-	if c.spec.Security.KeyManagementService.IsTokenAuthEnabled() && c.spec.Security.KeyManagementService.IsVaultKMS() {
-		if err := kms.SetTokenToEnvVar(c.clusterInfo.Context, c.context, c.spec.Security.KeyManagementService.TokenSecretName, kmsConfig.Provider, c.clusterInfo.Namespace); err != nil {
-			return errors.Wrapf(err, "failed to fetch kms token secret %q", c.spec.Security.KeyManagementService.TokenSecretName)
-		}
+	kmsConfig, err := kms.NewOperatorConfig(c.clusterInfo.Context, c.context, &c.spec, c.clusterInfo)
+	if err != nil {
+		return errors.Wrapf(err, "failed to check for the encryption key of OSD %d in the KMS", osd.ID)
 	}
 	if key, err := kmsConfig.GetSecret(osd.UUID); err != nil || key == "" {
 		return errors.Errorf("not deleting the encryption key of OSD %d from the mons, the %q KMS does not hold it. %v", osd.ID, kmsConfig.Provider, err)
@@ -125,33 +123,24 @@ func (c *Cluster) removeMonCopyOfHostOSDKey(osd OSDInfo) error {
 }
 
 // HostOSDKeyNames returns the names of the KMS keys of the encrypted host-based OSDs that have a
-// deployment in the namespace. shortcut: pending keys left by failed prepare runs are not listed,
-// since nothing records their names; list them from the KMS if they turn out to pile up.
-func HostOSDKeyNames(ctx context.Context, clientset kubernetes.Interface, namespace string) ([]string, error) {
+// deployment in the namespace. shortcut: OSDs whose deployment is already gone, and pending keys
+// of failed prepare runs, are not listed; list the keys from the KMS if they turn out to remain.
+func HostOSDKeyNames(ctx context.Context, clusterdContext *clusterd.Context, namespace string) ([]string, error) {
 	selector := fmt.Sprintf("%s=%s,%s=true", k8sutil.AppAttr, AppName, encrypted)
-	deployments, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	deployments, err := clusterdContext.Clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to list encrypted osd deployments")
 	}
+	c := &Cluster{context: clusterdContext, clusterInfo: &cephclient.ClusterInfo{Namespace: namespace, Context: ctx}}
 	names := []string{}
-	for _, d := range deployments.Items {
-		container, err := findOSDContainer(d.Spec.Template.Spec.Containers)
+	for i := range deployments.Items {
+		d := &deployments.Items[i]
+		osd, err := c.getOSDInfo(d)
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to find OSD container in deployment %q", d.Name)
-		}
-		var osd OSDInfo
-		onPVC := false
-		for _, env := range container.Env {
-			switch env.Name {
-			case "ROOK_OSD_UUID":
-				osd.UUID = env.Value
-			case "ROOK_CV_MODE":
-				osd.CVMode = env.Value
-			case "ROOK_PVC_BACKED_OSD":
-				onPVC = true
-			}
+			return nil, err
 		}
 		osd.Encrypted = true
+		_, onPVC := d.Labels[OSDOverPVCLabelKey]
 		if hostOSDUsesKMS(osd, onPVC) && osd.UUID != "" {
 			names = append(names, osd.UUID)
 		}
