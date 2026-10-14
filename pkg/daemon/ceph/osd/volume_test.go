@@ -2614,11 +2614,9 @@ func TestLVMModeAllowed(t *testing.T) {
 }
 
 func TestWipeDevicesFromOtherClusters(t *testing.T) {
-	agent := &OsdAgent{
-		clusterInfo: &cephclient.ClusterInfo{
-			FSID: "c03d7353-96e5-4a41-98de-830dfff97d06",
-		},
-	}
+	clusterInfo := cephclient.AdminTestClusterInfo("ns")
+	clusterInfo.FSID = "c03d7353-96e5-4a41-98de-830dfff97d06"
+	agent := &OsdAgent{clusterInfo: clusterInfo}
 
 	executor := &exectest.MockExecutor{}
 	executor.MockExecuteCommandWithOutput = func(command string, args ...string) (string, error) {
@@ -2701,6 +2699,9 @@ func TestWipeDevicesFromOtherClusters(t *testing.T) {
 		if slices.Contains(args, "raw") && slices.Contains(args, "list") {
 			return `{}`, nil // return empty
 		}
+		if slices.Contains(args, "osd") && slices.Contains(args, "dump") {
+			return `{"osds":[{"osd":0,"uuid":"0a1b2c3d-96e5-4a41-98de-830dfff97d06"}]}`, nil
+		}
 		return "", errors.Errorf("unknown command %s %s", command, args)
 	}
 	context = &clusterd.Context{
@@ -2709,6 +2710,29 @@ func TestWipeDevicesFromOtherClusters(t *testing.T) {
 	context.Executor = executor
 	err = agent.WipeDevicesFromOtherClusters(context)
 	assert.NoError(t, err)
+
+	// a closed host-based raw OSD of this cluster has its OSD fsid in the LUKS header, and is kept
+	zapped := false
+	combined := executor.MockExecuteCommandWithCombinedOutput
+	executor.MockExecuteCommandWithCombinedOutput = func(command string, args ...string) (string, error) {
+		if command == "stdbuf" || command == "wipefs" {
+			zapped = true
+		}
+		return combined(command, args...)
+	}
+	executor.MockExecuteCommandWithOutput = func(command string, args ...string) (string, error) {
+		if slices.Contains(args, "raw") && slices.Contains(args, "list") {
+			return `{}`, nil
+		}
+		if slices.Contains(args, "osd") && slices.Contains(args, "dump") {
+			return `{"osds":[{"osd":0,"uuid":"811e7dc0-ea13-4951-b000-24a8565d0735"}]}`, nil
+		}
+		return "", errors.Errorf("unknown command %s %s", command, args)
+	}
+	err = agent.WipeDevicesFromOtherClusters(context)
+	assert.NoError(t, err)
+	assert.False(t, zapped)
+	executor.MockExecuteCommandWithCombinedOutput = combined
 
 	// `ceph-volume raw list` returns an LVM symlink path (/dev/rhel/ceph-data) while
 	// the device RealPath is /dev/mapper/rhel-ceph--data. The device should still be

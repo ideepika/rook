@@ -61,7 +61,12 @@ func pendingKeyName(nodeName string, disk *sys.LocalDisk) string {
 	slices.Sort(links)
 	for _, prefix := range []string{"/dev/disk/by-id/", "/dev/disk/by-path/", "/dev/disk/by-loop-ref/"} {
 		i := slices.IndexFunc(links, func(link string) bool {
-			return strings.HasPrefix(link, prefix) && !strings.HasPrefix(link, prefix+"lvm-pv-uuid-") && !strings.HasPrefix(link, prefix+"dm-")
+			name := strings.TrimPrefix(link, prefix)
+			if !strings.HasPrefix(link, prefix) || strings.HasPrefix(name, "lvm-pv-uuid-") {
+				return false
+			}
+			// of the device-mapper links only the WWID of a multipath device is stable
+			return !strings.HasPrefix(name, "dm-") || strings.HasPrefix(name, "dm-uuid-mpath-")
 		})
 		if i >= 0 {
 			id = links[i]
@@ -100,11 +105,10 @@ func newHostOSDKey(context *clusterd.Context, clusterInfo *cephclient.ClusterInf
 	if err := kmsConfig.PutSecret(k.pendingName, key); err != nil {
 		return nil, errors.Wrapf(err, "failed to store the encryption key for device %q in the %q KMS", device, kmsConfig.Provider)
 	}
-	// IBM Key Protect keeps the alias of a deleted key, so PutSecret may keep the stale key. The OSD
-	// still works, but a failed move to the fsid cannot be recovered, since recoverHostOSDKeys()
-	// only moves a pending key that opens the device.
+	// IBM Key Protect keeps the alias of a deleted key, so PutSecret may keep the stale key, and
+	// the key of the new OSD would be lost if storing it under the fsid failed
 	if stored, err := kmsConfig.GetSecret(k.pendingName); err != nil || stored != key {
-		logger.Warningf("failed to replace the stale pending key %q in the %q KMS for device %q; if storing the key under the OSD fsid fails, the OSD must be prepared again. %v", k.pendingName, kmsConfig.Provider, device, err)
+		return nil, errors.Errorf("failed to replace the stale pending key %q in the %q KMS for device %q; delete it from the KMS to prepare the device. %v", k.pendingName, kmsConfig.Provider, device, err)
 	}
 	logger.Infof("stored the encryption key for device %q in the %q KMS as %q", device, kmsConfig.Provider, k.pendingName)
 	return k, nil
@@ -128,108 +132,170 @@ func (k *hostOSDKey) commit(prepareOutput string) (string, error) {
 
 // recoverHostOSDKeys moves pending keys to the fsid of the encrypted raw OSDs on this node whose
 // key the KMS does not hold yet, which happens when a prepare run failed after ceph-volume
-// created the OSD. It finds the OSDs by their LUKS header, and opens those that are closed, so
-// that "ceph-volume raw list" reports an OSD that got no deployment before a reboot.
+// created the OSD. It also opens the closed ones, so that "ceph-volume raw list" reports an OSD
+// that got no deployment before a reboot. Only OSDs of this cluster are opened, not purged ones.
 // shortcut: one KMS read per encrypted OSD on every prepare run; skip OSDs that have a deployment
 // if that load matters.
-func recoverHostOSDKeys(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo, nodeName string) error {
+func recoverHostOSDKeys(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo, nodeName string, clusterOSDs map[string]bool) error {
 	if !hostKMSEnabled() {
 		return nil
 	}
 	var kmsConfig *kms.Config
-	for _, disk := range context.Devices {
-		if disk.Filesystem != "crypto_LUKS" {
-			continue
-		}
-		dump, err := dumpLUKS(context, disk.RealPath)
-		if err != nil {
-			logger.Warningf("failed to check device %q for an encrypted OSD. %v", disk.RealPath, err)
-			continue
-		}
-		osdUUID := osdUUIDFromLUKS(dump)
-		if osdUUID == "" {
+	for _, osd := range hostLUKSOSDs(context) {
+		if !clusterOSDs[osd.uuid] {
 			continue
 		}
 		if kmsConfig == nil {
+			var err error
 			if kmsConfig, err = kmsConfigFromEnv(context, clusterInfo); err != nil {
 				return errors.Wrap(err, "failed to configure the KMS")
 			}
 		}
-		if err := recoverPendingKey(context, kmsConfig, nodeName, disk, osdUUID); err != nil {
+		key, err := recoverPendingKey(context, kmsConfig, nodeName, osd)
+		if err != nil {
 			return err
 		}
-		openHostOSD(context, kmsConfig, disk, osdUUID)
+		if osd.mapper == "" {
+			openHostOSD(context, kmsConfig, osd, key)
+		}
 	}
 	return nil
 }
 
-func recoverPendingKey(context *clusterd.Context, kmsConfig *kms.Config, nodeName string, disk *sys.LocalDisk, osdUUID string) error {
-	pendingName := pendingKeyName(nodeName, disk)
+type hostLUKSOSD struct {
+	disk   *sys.LocalDisk
+	uuid   string
+	mapper string // empty if the OSD is closed
+}
+
+// hostLUKSOSDs returns the devices of the encrypted raw OSDs on this node: closed ones by the OSD
+// fsid in their LUKS header, and open ones by their mapper, since device discovery skips a disk
+// with a child
+func hostLUKSOSDs(context *clusterd.Context) []hostLUKSOSD {
+	osds := []hostLUKSOSD{}
+	seen := map[string]bool{}
+	for _, disk := range context.Devices {
+		osd := hostLUKSOSD{disk: disk}
+		switch {
+		case disk.Type == sys.CryptType:
+			for _, link := range strings.Fields(disk.DevLinks) {
+				if strings.HasPrefix(link, "/dev/mapper/ceph-") && strings.HasSuffix(link, "-"+oposd.DmcryptBlockType) {
+					osd.mapper, osd.uuid = link, osdUUIDFromMapper(link)
+				}
+			}
+			if osd.uuid == "" {
+				continue
+			}
+			backing, err := GetBackingDeviceForEncryptedBlock(context, osd.mapper)
+			if err != nil {
+				logger.Warningf("failed to find the device of OSD %q. %v", osd.uuid, err)
+				continue
+			}
+			name := path.Base(backing)
+			if osd.disk, err = clusterd.PopulateDeviceUdevInfo(name, context.Executor, &sys.LocalDisk{Name: name, RealPath: backing}); err != nil {
+				logger.Warningf("failed to get the udev links of device %q of OSD %q. %v", backing, osd.uuid, err)
+				continue
+			}
+		case disk.Filesystem == "crypto_LUKS":
+			dump, err := dumpLUKS(context, disk.RealPath)
+			if err != nil {
+				logger.Warningf("failed to check device %q for an encrypted OSD. %v", disk.RealPath, err)
+				continue
+			}
+			if osd.uuid = osdUUIDFromLUKS(dump); osd.uuid == "" {
+				continue
+			}
+		default:
+			continue
+		}
+		// an open loop device is listed both as a LUKS device and through its mapper
+		if !seen[osd.uuid] || osd.mapper != "" {
+			if seen[osd.uuid] {
+				osds = slices.DeleteFunc(osds, func(o hostLUKSOSD) bool { return o.uuid == osd.uuid })
+			}
+			seen[osd.uuid] = true
+			osds = append(osds, osd)
+		}
+	}
+	return osds
+}
+
+// recoverPendingKey moves the pending key of the device of an OSD to its fsid, and returns the key
+// of the OSD if it read it
+func recoverPendingKey(context *clusterd.Context, kmsConfig *kms.Config, nodeName string, osd hostLUKSOSD) (string, error) {
+	pendingName := pendingKeyName(nodeName, osd.disk)
 	key, err := kmsConfig.GetSecret(pendingName)
 	if err != nil || key == "" {
 		// no pending key, the usual case: the key was moved to the fsid on prepare
-		return nil
+		return "", nil
 	}
 	// a pending key of an earlier failed attempt on this device, or of another device that had
 	// this name, must not replace the key of this OSD
-	if !keyOpensDevice(context, disk.RealPath, key) {
-		logger.Warningf("pending key %q does not open device %q of OSD %q, leaving it", pendingName, disk.RealPath, osdUUID)
-		return nil
+	if !keyOpensDevice(context, osd.disk.RealPath, key) {
+		logger.Warningf("pending key %q does not open device %q of OSD %q, leaving it", pendingName, osd.disk.RealPath, osd.uuid)
+		return "", nil
 	}
-	if stored, err := kmsConfig.GetSecret(osdUUID); err != nil || stored == "" {
-		if err := kmsConfig.PutSecret(osdUUID, key); err != nil {
-			return errors.Wrapf(err, "failed to store the pending encryption key %q as the key of OSD %q", pendingName, osdUUID)
+	if stored, err := kmsConfig.GetSecret(osd.uuid); err != nil || stored == "" {
+		if err := kmsConfig.PutSecret(osd.uuid, key); err != nil {
+			return "", errors.Wrapf(err, "failed to store the pending encryption key %q as the key of OSD %q", pendingName, osd.uuid)
 		}
-		logger.Infof("stored the pending encryption key %q as the key of OSD %q", pendingName, osdUUID)
+		logger.Infof("stored the pending encryption key %q as the key of OSD %q", pendingName, osd.uuid)
 	} else if stored != key {
-		logger.Warningf("OSD %q has a key in the KMS that differs from the pending key %q that opens its device, leaving both", osdUUID, pendingName)
-		return nil
+		logger.Warningf("OSD %q has a key in the KMS that differs from the pending key %q that opens its device, leaving both", osd.uuid, pendingName)
+		return "", nil
 	}
 	deleteKey(kmsConfig, pendingName)
-	return nil
+	return key, nil
 }
 
 // openHostOSD opens a closed encrypted raw OSD with its key from the KMS, under the mapper name
 // that ceph-volume gives it
-func openHostOSD(context *clusterd.Context, kmsConfig *kms.Config, disk *sys.LocalDisk, osdUUID string) {
-	mapper := fmt.Sprintf("ceph-%s-%s-%s", osdUUID, path.Base(disk.RealPath), oposd.DmcryptBlockType)
-	if _, err := os.Stat(path.Join("/dev/mapper", mapper)); err == nil {
+func openHostOSD(context *clusterd.Context, kmsConfig *kms.Config, osd hostLUKSOSD, key string) {
+	if key == "" {
+		var err error
+		if key, err = kmsConfig.GetSecret(osd.uuid); err != nil || key == "" {
+			logger.Debugf("not opening OSD %q on device %q, the %q KMS has no key for it. %v", osd.uuid, osd.disk.RealPath, kmsConfig.Provider, err)
+			return
+		}
+	}
+	mapper := fmt.Sprintf("ceph-%s-%s-%s", osd.uuid, path.Base(osd.disk.RealPath), oposd.DmcryptBlockType)
+	if err := openEncryptedDevice(context, osd.disk.RealPath, mapper, key); err != nil {
+		logger.Warningf("failed to open OSD %q. %v", osd.uuid, err)
 		return
 	}
-	key, err := kmsConfig.GetSecret(osdUUID)
-	if err != nil || key == "" {
-		// also the case for LUKS devices of lvm mode OSDs, and of other clusters
-		logger.Debugf("not opening OSD %q on device %q, the %q KMS has no key for it. %v", osdUUID, disk.RealPath, kmsConfig.Provider, err)
-		return
+	logger.Infof("opened OSD %q on device %q as %q", osd.uuid, osd.disk.RealPath, mapper)
+}
+
+func keyOpensDevice(context *clusterd.Context, device, key string) bool {
+	args := []string{"luksOpen", "--test-passphrase", device}
+	return context.Executor.ExecuteCommandWithStdin(luksOpenCmdTimeOut, cryptsetupBinary, &key, args...) == nil
+}
+
+// clusterOSDUUIDs returns the fsids of the OSDs of this cluster
+func clusterOSDUUIDs(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo) (map[string]bool, error) {
+	dump, err := cephclient.GetOSDDump(context, clusterInfo)
+	if err != nil {
+		return nil, err
 	}
-	args := []string{"luksOpen", "--allow-discards", "--key-file", "-", disk.RealPath, mapper}
-	if err := context.Executor.ExecuteCommandWithStdin(luksOpenCmdTimeOut, cryptsetupBinary, &key, args...); err != nil {
-		logger.Warningf("failed to open OSD %q on device %q. %v", osdUUID, disk.RealPath, err)
-		return
+	uuids := map[string]bool{}
+	for _, osd := range dump.OSDs {
+		uuids[osd.UUID] = true
 	}
-	logger.Infof("opened OSD %q on device %q as %q", osdUUID, disk.RealPath, mapper)
+	return uuids, nil
 }
 
 // osdUUIDFromLUKS returns the OSD fsid that ceph-volume writes to the LUKS2 subsystem of raw mode
 // OSDs, "ceph_fsid=<osd fsid>"
 func osdUUIDFromLUKS(dump string) string {
-	for _, line := range strings.Split(dump, "\n") {
-		value, found := strings.CutPrefix(strings.TrimSpace(line), "Subsystem:")
-		if !found {
-			continue
-		}
-		id, err := uuid.Parse(strings.TrimPrefix(strings.TrimSpace(value), "ceph_fsid="))
-		if err != nil || !strings.Contains(value, "ceph_fsid=") {
-			return ""
-		}
-		return id.String()
+	match := luksLabelCephFSID.FindStringSubmatch(dump)
+	if match == nil {
+		return ""
 	}
-	return ""
-}
-
-func keyOpensDevice(context *clusterd.Context, device, key string) bool {
-	args := []string{"luksOpen", "--test-passphrase", "--key-file", "-", device}
-	return context.Executor.ExecuteCommandWithStdin(luksOpenCmdTimeOut, cryptsetupBinary, &key, args...) == nil
+	id, err := uuid.Parse(strings.TrimSpace(match[1]))
+	if err != nil {
+		return ""
+	}
+	return id.String()
 }
 
 func deleteKey(kmsConfig *kms.Config, name string) {
