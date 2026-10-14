@@ -18,9 +18,15 @@ package osd
 
 import (
 	_ "embed"
+	"fmt"
+	"syscall"
 
+	"github.com/pkg/errors"
+	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	"github.com/rook/rook/pkg/daemon/ceph/osd/kms"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
+	"github.com/rook/rook/pkg/util/exec"
+	"github.com/rook/rook/pkg/util/log"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -72,4 +78,31 @@ func (c *Cluster) getHostEncryptionOpenInitContainer(osd OSDInfo, osdProps osdPr
 		SecurityContext: controller.PrivilegedContext(true),
 		Resources:       osdProps.resources,
 	}
+}
+
+// removeMonCopyOfHostOSDKey removes the copy of the encryption key that "ceph-volume raw prepare"
+// stores in the mons, so that the KMS holds the only copy. ceph-volume sends the key with
+// "ceph osd new", which stores it as a config-key and creates a lockbox user that can read it.
+// Raw mode OSDs never read it, since the OSD pod opens the device with the key from the KMS.
+// The prepare pod's bootstrap-osd key may not delete either, so the operator does it.
+func (c *Cluster) removeMonCopyOfHostOSDKey(osd OSDInfo) error {
+	configKey := fmt.Sprintf("dm-crypt/osd/%s/luks", osd.UUID)
+	// "config-key rm" writes to the mons even when the key is missing, so check first
+	_, err := cephclient.NewCephCommand(c.context, c.clusterInfo, []string{"config-key", "exists", configKey}).Run()
+	if code, ok := exec.ExitStatus(err); ok && code == int(syscall.ENOENT) {
+		return nil
+	} else if err != nil {
+		return errors.Wrapf(err, "failed to check for the encryption key of OSD %d in the mons", osd.ID)
+	}
+
+	// Delete the user first: if the config-key went first and this failed, the next reconcile
+	// would find no config-key and leave the user behind
+	if err := cephclient.AuthDelete(c.context, c.clusterInfo, "client.osd-lockbox."+osd.UUID); err != nil {
+		return errors.Wrapf(err, "failed to delete the lockbox user of OSD %d", osd.ID)
+	}
+	if _, err := cephclient.NewCephCommand(c.context, c.clusterInfo, []string{"config-key", "rm", configKey}).Run(); err != nil {
+		return errors.Wrapf(err, "failed to delete the encryption key of OSD %d from the mons", osd.ID)
+	}
+	log.NamespacedInfo(c.clusterInfo.Namespace, logger, "deleted the copy of the encryption key of OSD %d from the mons; the KMS holds the only copy", osd.ID)
+	return nil
 }

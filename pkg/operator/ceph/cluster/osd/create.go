@@ -91,6 +91,13 @@ func (c *createConfig) createNewOSDsFromStatus(
 	}
 
 	for i, osd := range status.OSDs {
+		// Prepare jobs report existing OSDs too, so this retries on every reconcile until it works
+		if !status.PvcBackedOSD && osd.Encrypted && osd.CVMode == "raw" && c.cluster.spec.Security.KeyManagementService.IsEnabled() {
+			if err := c.cluster.removeMonCopyOfHostOSDKey(osd); err != nil {
+				errs.addError("%v", err)
+			}
+		}
+
 		if c.deployments.Exists(osd.ID) {
 			// A reprovisioned replacement is held as a scaled-to-zero marker Deployment; delete it here
 			// so the create flow below rebuilds it fresh from the status CM.
