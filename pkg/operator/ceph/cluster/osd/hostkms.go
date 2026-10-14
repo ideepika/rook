@@ -17,6 +17,7 @@ limitations under the License.
 package osd
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"syscall"
@@ -25,9 +26,12 @@ import (
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	"github.com/rook/rook/pkg/daemon/ceph/osd/kms"
 	"github.com/rook/rook/pkg/operator/ceph/controller"
+	"github.com/rook/rook/pkg/operator/k8sutil"
 	"github.com/rook/rook/pkg/util/exec"
 	"github.com/rook/rook/pkg/util/log"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -118,4 +122,39 @@ func (c *Cluster) removeMonCopyOfHostOSDKey(osd OSDInfo) error {
 	}
 	log.NamespacedInfo(c.clusterInfo.Namespace, logger, "deleted the copy of the encryption key of OSD %d from the mons; the KMS holds the only copy", osd.ID)
 	return nil
+}
+
+// HostOSDKeyNames returns the names of the KMS keys of the encrypted host-based OSDs that have a
+// deployment in the namespace. shortcut: pending keys left by failed prepare runs are not listed,
+// since nothing records their names; list them from the KMS if they turn out to pile up.
+func HostOSDKeyNames(ctx context.Context, clientset kubernetes.Interface, namespace string) ([]string, error) {
+	selector := fmt.Sprintf("%s=%s,%s=true", k8sutil.AppAttr, AppName, encrypted)
+	deployments, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to list encrypted osd deployments")
+	}
+	names := []string{}
+	for _, d := range deployments.Items {
+		container, err := findOSDContainer(d.Spec.Template.Spec.Containers)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to find OSD container in deployment %q", d.Name)
+		}
+		var osd OSDInfo
+		onPVC := false
+		for _, env := range container.Env {
+			switch env.Name {
+			case "ROOK_OSD_UUID":
+				osd.UUID = env.Value
+			case "ROOK_CV_MODE":
+				osd.CVMode = env.Value
+			case "ROOK_PVC_BACKED_OSD":
+				onPVC = true
+			}
+		}
+		osd.Encrypted = true
+		if hostOSDUsesKMS(osd, onPVC) && osd.UUID != "" {
+			names = append(names, osd.UUID)
+		}
+	}
+	return names, nil
 }

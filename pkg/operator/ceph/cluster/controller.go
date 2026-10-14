@@ -545,7 +545,7 @@ func (c *ClusterController) requestClusterDelete(clusterObj *cephv1.CephCluster)
 
 	if clusterObj.Spec.External.Enable {
 		purgeExternalCluster(c.context.Clientset, clusterObj.Namespace)
-	} else if clusterObj.Spec.Storage.IsOnPVCEncrypted() && clusterObj.Spec.Security.KeyManagementService.IsEnabled() {
+	} else if clusterObj.Spec.Security.KeyManagementService.IsEnabled() && (clusterObj.Spec.Storage.IsOnPVCEncrypted() || clusterObj.Spec.CleanupPolicy.HasDataDirCleanPolicy()) {
 		// If the StorageClass retain policy of an encrypted cluster with KMS is Delete we also delete the keys
 		// Delete keys from KMS
 		err := c.deleteOSDEncryptionKeyFromKMS(clusterObj)
@@ -693,10 +693,25 @@ func (c *ClusterController) deleteOSDEncryptionKeyFromKMS(currentCluster *cephv1
 		}
 	}
 
-	// Delete each PV KEK
-	for _, osdPVC := range osdPVCs {
+	// The keys of host-based OSDs open the disks, so they are only deleted when the cleanup
+	// policy says the data is destroyed anyway
+	keyNames := []string{}
+	if currentCluster.Spec.CleanupPolicy.HasDataDirCleanPolicy() {
+		keyNames, err = osd.HostOSDKeyNames(ctx, c.context.Clientset, currentCluster.Namespace)
+		if err != nil {
+			return err
+		}
+	}
+	if currentCluster.Spec.Storage.IsOnPVCEncrypted() {
+		for _, osdPVC := range osdPVCs {
+			keyNames = append(keyNames, osdPVC.Name)
+		}
+	}
+
+	// Delete each PV KEK and host OSD key
+	for _, keyName := range keyNames {
 		// Generate and store the encrypted key in whatever KMS is configured
-		err = kmsConfig.DeleteSecret(osdPVC.Name)
+		err = kmsConfig.DeleteSecret(keyName)
 		if err != nil {
 			log.NamespacedError(currentCluster.Namespace, logger, "failed to delete secret. %v", err)
 			continue

@@ -28,6 +28,7 @@ import (
 	"github.com/rook/rook/pkg/daemon/ceph/osd/kms"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -101,4 +102,28 @@ func TestRemoveMonCopyOfHostOSDKey(t *testing.T) {
 		assert.Error(t, err)
 		assert.Len(t, ran, 2)
 	})
+}
+
+func TestHostOSDKeyNames(t *testing.T) {
+	deployment := func(name, uuid, cvMode string, onPVC bool) *appsv1.Deployment {
+		env := []v1.EnvVar{{Name: "ROOK_OSD_UUID", Value: uuid}, {Name: "ROOK_CV_MODE", Value: cvMode}}
+		if onPVC {
+			env = append(env, v1.EnvVar{Name: "ROOK_PVC_BACKED_OSD", Value: "true"})
+		}
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Labels: map[string]string{"app": AppName, encrypted: "true"}},
+			Spec: appsv1.DeploymentSpec{Template: v1.PodTemplateSpec{Spec: v1.PodSpec{
+				Containers: []v1.Container{{Name: "osd", Env: env}},
+			}}},
+		}
+	}
+	clientset := fake.NewSimpleClientset(
+		deployment("rook-ceph-osd-0", "uuid-host-raw", "raw", false),
+		deployment("rook-ceph-osd-1", "uuid-host-lvm", "lvm", false),
+		deployment("rook-ceph-osd-2", "uuid-pvc-raw", "raw", true),
+	)
+
+	names, err := HostOSDKeyNames(context.TODO(), clientset, "ns")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"uuid-host-raw"}, names)
 }
