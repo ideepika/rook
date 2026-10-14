@@ -31,6 +31,16 @@ if [ -b "$DM_PATH" ]; then
 	exit 0
 fi
 
+# the prepare job opens a closed OSD under the kernel name the device has now, which may differ from
+# the one in the name the OSD was created with
+for mapper in /dev/mapper/ceph-"$ROOK_OSD_UUID"-*-block-dmcrypt; do
+	if [ -b "$mapper" ]; then
+		dmsetup rename "$(basename "$mapper")" "$DM_NAME"
+		echo "renamed $mapper to $DM_PATH"
+		exit 0
+	fi
+done
+
 # ceph-volume records the OSD fsid in the LUKS2 subsystem, so the device is found even if its
 # kernel name changed since prepare
 DEVICE=""
