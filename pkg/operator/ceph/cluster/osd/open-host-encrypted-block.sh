@@ -34,7 +34,7 @@ fi
 # ceph-volume records the OSD fsid in the LUKS2 subsystem, so the device is found even if its
 # kernel name changed since prepare
 DEVICE=""
-for dev in $(lsblk --noheadings --paths --list --output NAME,TYPE | awk '$2 == "disk" || $2 == "part" || $2 == "loop" {print $1}'); do
+for dev in $(lsblk --noheadings --paths --list --output NAME,TYPE | awk '$2 == "disk" || $2 == "part" || $2 == "loop" || $2 == "mpath" {print $1}'); do
 	if cryptsetup luksDump "$dev" 2>/dev/null | grep -q "ceph_fsid=$ROOK_OSD_UUID"; then
 		DEVICE="$dev"
 		break
@@ -45,7 +45,7 @@ if [ -z "$DEVICE" ]; then
 	exit 1
 fi
 
+trap 'rm -f "$KEY_FILE"' EXIT
 rook key-management get "$ROOK_OSD_UUID" "$KEY_FILE"
 cryptsetup luksOpen --verbose --disable-keyring --allow-discards --key-file "$KEY_FILE" "$DEVICE" "$DM_NAME"
-rm -f "$KEY_FILE"
 echo "opened $DEVICE as $DM_PATH"
