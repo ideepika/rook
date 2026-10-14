@@ -91,13 +91,6 @@ func (c *createConfig) createNewOSDsFromStatus(
 	}
 
 	for i, osd := range status.OSDs {
-		// Prepare jobs report existing OSDs too, so this retries on every reconcile until it works
-		if !status.PvcBackedOSD && osd.Encrypted && osd.CVMode == "raw" && c.cluster.spec.Security.KeyManagementService.IsEnabled() {
-			if err := c.cluster.removeMonCopyOfHostOSDKey(osd); err != nil {
-				errs.addError("%v", err)
-			}
-		}
-
 		if c.deployments.Exists(osd.ID) {
 			// A reprovisioned replacement is held as a scaled-to-zero marker Deployment; delete it here
 			// so the create flow below rebuilds it fresh from the status CM.
@@ -113,6 +106,15 @@ func (c *createConfig) createNewOSDsFromStatus(
 			log.NamespacedInfo(c.cluster.clusterInfo.Namespace, logger, "replaced OSD %d is reprovisioned; deleting the marker deployment to recreate it from the status", osd.ID)
 			if err := c.cluster.deleteOSDDeployment(osd.ID); err != nil {
 				errs.addError("%v", errors.Wrapf(err, "failed to delete the marker deployment for replaced OSD %d", osd.ID))
+				continue
+			}
+		}
+
+		// The OSD is created only once its key is out of the mons, so a failure is retried on the
+		// next reconcile, when the prepare job reports the OSD again
+		if hostOSDUsesKMS(osd, status.PvcBackedOSD) {
+			if err := c.cluster.removeMonCopyOfHostOSDKey(osd); err != nil {
+				errs.addError("%v", err)
 				continue
 			}
 		}

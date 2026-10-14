@@ -327,6 +327,13 @@ func (c *Config) DeleteSecret(secretName string) error {
 			return errors.Wrap(err, "failed to delete key with kmip")
 		}
 	}
+	// The Kubernetes Secret holds the key, or the unique id of the KMIP key; PutSecret does nothing
+	// while it exists
+	if c.IsK8s() || c.IsKMIP() {
+		if err := c.deleteKubernetesSecret(secretName); err != nil {
+			return err
+		}
+	}
 
 	if c.IsAzure() {
 		v, err := InitAzure(c.ClusterInfo.Context, c.context, c.ClusterInfo.Namespace, c.clusterSpec.Security.KeyManagementService.ConnectionDetails)

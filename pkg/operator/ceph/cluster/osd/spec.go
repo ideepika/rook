@@ -462,7 +462,7 @@ func (c *Cluster) makeDeployment(osdProps osdProperties, osd *OSDInfo, provision
 		// This container will activate the OSD and place the activated files into an empty dir
 		// The empty dir will be shared by the "activate-osd" pod and the "osd" main pod
 		// An encrypted OSD with its key in the KMS must be opened before ceph-volume can activate it
-		if c.hostOSDUsesKMS(*osd, osdProps) {
+		if hostOSDUsesKMS(*osd, osdProps.onPVC()) {
 			openVolumes, openContainer := c.getHostEncryptionOpenInitContainer(*osd, osdProps)
 			volumes = append(volumes, openVolumes...)
 			initContainers = append(initContainers, openContainer)

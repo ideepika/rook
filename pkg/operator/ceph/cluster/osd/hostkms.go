@@ -39,10 +39,11 @@ const (
 //go:embed open-host-encrypted-block.sh
 var openHostEncryptedBlockCode string
 
-// hostOSDUsesKMS reports whether the OSD is an encrypted host-based raw mode OSD whose key is in
-// the KMS
-func (c *Cluster) hostOSDUsesKMS(osd OSDInfo, osdProps osdProperties) bool {
-	return !osdProps.onPVC() && osd.Encrypted && osd.CVMode == "raw" && c.spec.Security.KeyManagementService.IsEnabled()
+// hostOSDUsesKMS reports whether the OSD is an encrypted host-based raw mode OSD, whose key is in
+// the KMS. Encrypted host OSDs only use raw mode with a KMS, so this does not depend on the
+// current KMS settings: an OSD whose KMS settings were removed fails to open, and says why.
+func hostOSDUsesKMS(osd OSDInfo, onPVC bool) bool {
+	return !onPVC && osd.Encrypted && osd.CVMode == "raw"
 }
 
 // getHostEncryptionOpenInitContainer returns the init container that fetches the key of an
@@ -93,6 +94,18 @@ func (c *Cluster) removeMonCopyOfHostOSDKey(osd OSDInfo) error {
 		return nil
 	} else if err != nil {
 		return errors.Wrapf(err, "failed to check for the encryption key of OSD %d in the mons", osd.ID)
+	}
+
+	// The mons may hold the only copy stored under the fsid, if the prepare job failed to move the
+	// key in the KMS to the fsid
+	kmsConfig := kms.NewConfig(c.context, &c.spec, c.clusterInfo)
+	if c.spec.Security.KeyManagementService.IsTokenAuthEnabled() && c.spec.Security.KeyManagementService.IsVaultKMS() {
+		if err := kms.SetTokenToEnvVar(c.clusterInfo.Context, c.context, c.spec.Security.KeyManagementService.TokenSecretName, kmsConfig.Provider, c.clusterInfo.Namespace); err != nil {
+			return errors.Wrapf(err, "failed to fetch kms token secret %q", c.spec.Security.KeyManagementService.TokenSecretName)
+		}
+	}
+	if key, err := kmsConfig.GetSecret(osd.UUID); err != nil || key == "" {
+		return errors.Errorf("not deleting the encryption key of OSD %d from the mons, the %q KMS does not hold it. %v", osd.ID, kmsConfig.Provider, err)
 	}
 
 	// Delete the user first: if the config-key went first and this failed, the next reconcile

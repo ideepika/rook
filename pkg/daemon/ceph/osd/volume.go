@@ -180,6 +180,9 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to get device already provisioned by ceph-volume raw")
 			}
+			if err := recoverHostOSDKeys(context, a.clusterInfo, a.nodeName, rawOsds); err != nil {
+				return nil, err
+			}
 			osds = appendOSDInfo(osds, slices.DeleteFunc(rawOsds, func(o oposd.OSDInfo) bool { return slices.Contains(destroyedOSDIds, o.ID) }))
 		}
 
@@ -247,6 +250,11 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 	if !isEncrypted {
 		rawOsds, err = ensurePreparedDevicesListed(context, a.clusterInfo, rawOsds, preparedRawDevices, a.devices)
 		if err != nil {
+			return nil, err
+		}
+	}
+	if !a.pvcBacked {
+		if err := recoverHostOSDKeys(context, a.clusterInfo, a.nodeName, rawOsds); err != nil {
 			return nil, err
 		}
 	}
@@ -672,13 +680,9 @@ func (a *OsdAgent) initializeDevicesRawMode(context *clusterd.Context, devices *
 			// execute ceph-volume with the device
 			op, err := context.Executor.ExecuteCommandWithCombinedOutput(baseCommand, immediateExecuteArgs...)
 			if encrypted {
-				// The OSD listing that follows must not see the key, see GetCephVolumeRawOSDs()
+				// The OSD listing that follows must not see the key, see GetCephVolumeRawOSDs().
+				// The pending key is kept if prepare failed: ceph-volume may have created the OSD.
 				_ = os.Unsetenv(oposd.CephVolumeEncryptedKeyEnvVarName)
-				if err == nil {
-					err = hostKey.commit(op)
-				} else {
-					hostKey.abort()
-				}
 			}
 			if err != nil {
 				cvLogFilePath := path.Join(cephLogDir, "ceph-volume.log")
@@ -694,8 +698,12 @@ func (a *OsdAgent) initializeDevicesRawMode(context *clusterd.Context, devices *
 			}
 			logger.Infof("%v", op)
 			if encrypted {
+				mapper, err := hostKey.commit(op)
+				if err != nil {
+					return nil, err
+				}
 				// "ceph-volume raw list" reports an encrypted OSD by its mapper, not by the device
-				preparedDevices = append(preparedDevices, getEncryptedBlockPath(op, oposd.DmcryptBlockType))
+				preparedDevices = append(preparedDevices, mapper)
 			} else {
 				preparedDevices = append(preparedDevices, deviceArg)
 			}

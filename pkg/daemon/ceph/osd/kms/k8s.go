@@ -83,6 +83,16 @@ func (c *Config) getKubernetesSecret(pvcName string) (string, error) {
 	return string(secret.Data[OsdEncryptionSecretNameKeyName]), nil
 }
 
+// deleteKubernetesSecret deletes the Kubernetes Secret of a dmcrypt key
+func (c *Config) deleteKubernetesSecret(pvcName string) error {
+	secretName := GenerateOSDEncryptionSecretName(pvcName)
+	err := c.context.Clientset.CoreV1().Secrets(c.ClusterInfo.Namespace).Delete(c.ClusterInfo.Context, secretName, metav1.DeleteOptions{})
+	if err != nil && !kerrors.IsNotFound(err) {
+		return errors.Wrapf(err, "failed to delete secret %q", secretName)
+	}
+	return nil
+}
+
 func generateOSDEncryptedKeySecret(pvcName, key string, clusterInfo *cephclient.ClusterInfo) (*v1.Secret, error) {
 	s := &v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
