@@ -671,11 +671,14 @@ func (a *OsdAgent) initializeDevicesRawMode(context *clusterd.Context, devices *
 				var err error
 				// the pending key is named by the udev links of the device, see pendingKeyName()
 				if device.DeviceInfo == nil {
-					return nil, errors.Errorf("failed to find the udev links of encrypted device %q", name)
+					logger.Errorf("skipping encrypted device %q, failed to find its udev links", name)
+					continue
 				}
 				hostKey, err = newHostOSDKey(context, a.clusterInfo, a.nodeName, device.DeviceInfo)
 				if err != nil {
-					return nil, err
+					// one device in a bad state must not stop the others from being prepared
+					logger.Errorf("skipping encrypted device %q. %v", name, err)
+					continue
 				}
 				immediateExecuteArgs = append(immediateExecuteArgs, encryptedFlag)
 				// ceph-volume reads the key from the environment only
@@ -1139,11 +1142,7 @@ func (a *OsdAgent) WipeDevicesFromOtherClusters(context *clusterd.Context) error
 		// ceph-volume raw list didn't return any existing OSDs. It's possible that /dev/mapper entries of the encrypted disks were removed.
 		// Check for cephFSID in the luks header of the disk and clean the disk if it does not match the cephFSID of the current cluster.
 		logger.Infof("ceph-volume didn't return any existing OSDs. Checking for cephFSID of a different cluster in the luks header of the disk")
-		clusterOSDs, err := clusterOSDUUIDs(context, a.clusterInfo)
-		if err != nil {
-			return errors.Wrap(err, "failed to list the osds of the cluster")
-		}
-		err = wipeEncryptedDevicesFromOtherClusters(context, a.clusterInfo.FSID, clusterOSDs)
+		err := wipeEncryptedDevicesFromOtherClusters(context, a.clusterInfo)
 		if err != nil {
 			return errors.Wrapf(err, "failed to clean up encrypted disks from other clusters")
 		}
@@ -1186,7 +1185,9 @@ func (a *OsdAgent) WipeDevicesFromOtherClusters(context *clusterd.Context) error
 	return nil
 }
 
-func wipeEncryptedDevicesFromOtherClusters(context *clusterd.Context, currentClusterFSID string, clusterOSDs map[string]bool) error {
+func wipeEncryptedDevicesFromOtherClusters(context *clusterd.Context, clusterInfo *client.ClusterInfo) error {
+	currentClusterFSID := clusterInfo.FSID
+	var clusterOSDs map[string]bool
 	for _, disk := range context.Devices {
 		if disk.Filesystem == "crypto_LUKS" {
 			metadata, err := dumpLUKS(context, disk.Name)
@@ -1204,6 +1205,12 @@ func wipeEncryptedDevicesFromOtherClusters(context *clusterd.Context, currentClu
 			// is it an OSD from our cluster?
 			currentDiskCephFSID := strings.SplitAfter(ceph_fsid, "=")[1]
 			// ceph-volume writes the OSD fsid there for host-based raw mode OSDs
+			if currentDiskCephFSID != currentClusterFSID && clusterOSDs == nil {
+				var err error
+				if clusterOSDs, err = clusterOSDUUIDs(context, clusterInfo); err != nil {
+					return errors.Wrap(err, "failed to list the osds of the cluster")
+				}
+			}
 			if currentDiskCephFSID != currentClusterFSID && !clusterOSDs[currentDiskCephFSID] {
 				logger.Infof("cleaning encrypted disk %q (%q) that is part of a different ceph cluster %q", disk.Name, disk.RealPath, currentDiskCephFSID)
 				if err := ZapDevice(context, disk.RealPath); err != nil {

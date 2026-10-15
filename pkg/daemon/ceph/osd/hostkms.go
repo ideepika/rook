@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -107,8 +108,10 @@ func newHostOSDKey(context *clusterd.Context, clusterInfo *cephclient.ClusterInf
 	}
 	// IBM Key Protect keeps the alias of a deleted key, so PutSecret may keep the stale key, and
 	// the key of the new OSD would be lost if storing it under the fsid failed
-	if stored, err := kmsConfig.GetSecret(k.pendingName); err != nil || stored != key {
-		return nil, errors.Errorf("failed to replace the stale pending key %q in the %q KMS for device %q; delete it from the KMS to prepare the device. %v", k.pendingName, kmsConfig.Provider, device, err)
+	if stored, err := kmsConfig.GetSecret(k.pendingName); err != nil {
+		logger.Warningf("failed to read back the pending key %q for device %q. %v", k.pendingName, device, err)
+	} else if stored != key {
+		return nil, errors.Errorf("failed to replace the stale pending key %q in the %q KMS for device %q; delete it from the KMS to prepare the device", k.pendingName, kmsConfig.Provider, device)
 	}
 	logger.Infof("stored the encryption key for device %q in the %q KMS as %q", device, kmsConfig.Provider, k.pendingName)
 	return k, nil
@@ -172,8 +175,8 @@ type hostLUKSOSD struct {
 // fsid in their LUKS header, and open ones by their mapper, since device discovery skips a disk
 // with a child
 func hostLUKSOSDs(context *clusterd.Context) []hostLUKSOSD {
-	osds := []hostLUKSOSD{}
-	seen := map[string]bool{}
+	byUUID := map[string]hostLUKSOSD{}
+	order := []string{}
 	for _, disk := range context.Devices {
 		osd := hostLUKSOSD{disk: disk}
 		switch {
@@ -191,8 +194,8 @@ func hostLUKSOSDs(context *clusterd.Context) []hostLUKSOSD {
 				logger.Warningf("failed to find the device of OSD %q. %v", osd.uuid, err)
 				continue
 			}
-			name := path.Base(backing)
-			if osd.disk, err = clusterd.PopulateDeviceUdevInfo(name, context.Executor, &sys.LocalDisk{Name: name, RealPath: backing}); err != nil {
+			// the full path: a multipath device is under /dev/mapper
+			if osd.disk, err = clusterd.PopulateDeviceUdevInfo(backing, context.Executor, &sys.LocalDisk{Name: path.Base(backing), RealPath: backing}); err != nil {
 				logger.Warningf("failed to get the udev links of device %q of OSD %q. %v", backing, osd.uuid, err)
 				continue
 			}
@@ -208,14 +211,17 @@ func hostLUKSOSDs(context *clusterd.Context) []hostLUKSOSD {
 		default:
 			continue
 		}
-		// an open loop device is listed both as a LUKS device and through its mapper
-		if !seen[osd.uuid] || osd.mapper != "" {
-			if seen[osd.uuid] {
-				osds = slices.DeleteFunc(osds, func(o hostLUKSOSD) bool { return o.uuid == osd.uuid })
-			}
-			seen[osd.uuid] = true
-			osds = append(osds, osd)
+		// an open loop device is listed both as a LUKS device and through its mapper, which wins
+		if _, found := byUUID[osd.uuid]; !found {
+			order = append(order, osd.uuid)
+		} else if osd.mapper == "" {
+			continue
 		}
+		byUUID[osd.uuid] = osd
+	}
+	osds := []hostLUKSOSD{}
+	for _, id := range order {
+		osds = append(osds, byUUID[id])
 	}
 	return osds
 }
@@ -259,6 +265,9 @@ func openHostOSD(context *clusterd.Context, kmsConfig *kms.Config, osd hostLUKSO
 		}
 	}
 	mapper := fmt.Sprintf("ceph-%s-%s-%s", osd.uuid, path.Base(osd.disk.RealPath), oposd.DmcryptBlockType)
+	if _, err := os.Stat(path.Join("/dev/mapper", mapper)); err == nil {
+		return
+	}
 	if err := openEncryptedDevice(context, osd.disk.RealPath, mapper, key); err != nil {
 		logger.Warningf("failed to open OSD %q. %v", osd.uuid, err)
 		return
@@ -284,10 +293,12 @@ func clusterOSDUUIDs(context *clusterd.Context, clusterInfo *cephclient.ClusterI
 	return uuids, nil
 }
 
+var luksSubsystemCephFSID = regexp.MustCompile(`(?m)^Subsystem:\s*ceph_fsid=(\S+)`)
+
 // osdUUIDFromLUKS returns the OSD fsid that ceph-volume writes to the LUKS2 subsystem of raw mode
 // OSDs, "ceph_fsid=<osd fsid>"
 func osdUUIDFromLUKS(dump string) string {
-	match := luksLabelCephFSID.FindStringSubmatch(dump)
+	match := luksSubsystemCephFSID.FindStringSubmatch(dump)
 	if match == nil {
 		return ""
 	}

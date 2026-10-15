@@ -68,6 +68,8 @@ func TestOSDUUIDFromLUKS(t *testing.T) {
 	assert.Equal(t, "64f279de-45a7-4372-aa11-d52d13db22c6", osdUUIDFromLUKS("LUKS header information\nVersion:       \t2\nLabel:         \t(no label)\nSubsystem:     \tceph_fsid=64f279de-45a7-4372-aa11-d52d13db22c6\n"))
 	assert.Equal(t, "", osdUUIDFromLUKS("Label:  \t(no label)\nSubsystem:     \t(no subsystem)\n"))
 	assert.Equal(t, "", osdUUIDFromLUKS("Subsystem: ceph_fsid=not-a-uuid\n"))
+	// only the subsystem holds the OSD fsid
+	assert.Equal(t, "", osdUUIDFromLUKS("Label:         \tceph_fsid=64f279de-45a7-4372-aa11-d52d13db22c6\nSubsystem:     \t(no subsystem)\n"))
 }
 
 func TestHostLUKSOSDs(t *testing.T) {
