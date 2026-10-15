@@ -132,7 +132,8 @@ func HostOSDKeyNames(ctx context.Context, clusterdContext *clusterd.Context, nam
 		return nil, errors.Wrap(err, "failed to list encrypted osd deployments")
 	}
 	names := []string{}
-	for _, d := range deployments.Items {
+	for i := range deployments.Items {
+		d := &deployments.Items[i]
 		container, err := findOSDContainer(d.Spec.Template.Spec.Containers)
 		if err != nil {
 			log.NamespacedWarning(namespace, logger, "not deleting the encryption key of OSD deployment %q. %v", d.Name, err)
@@ -144,7 +145,7 @@ func HostOSDKeyNames(ctx context.Context, clusterdContext *clusterd.Context, nam
 			switch env.Name {
 			case "ROOK_OSD_UUID":
 				osd.UUID = env.Value
-			case "ROOK_CV_MODE":
+			case cvModeVarName:
 				osd.CVMode = env.Value
 			}
 		}

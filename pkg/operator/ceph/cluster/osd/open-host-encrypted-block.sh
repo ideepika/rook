@@ -35,7 +35,13 @@ fi
 # the one in the name the OSD was created with
 for mapper in /dev/mapper/ceph-"$ROOK_OSD_UUID"-*-block-dmcrypt; do
 	if [ -b "$mapper" ]; then
-		dmsetup rename "$(basename "$mapper")" "$DM_NAME"
+		# no udev in the container to wait for, so create the device node directly
+		dmsetup rename --noudevsync "$(basename "$mapper")" "$DM_NAME"
+		dmsetup mknodes "$DM_NAME"
+		if [ ! -b "$DM_PATH" ]; then
+			echo "failed to rename $mapper to $DM_PATH" >&2
+			exit 1
+		fi
 		echo "renamed $mapper to $DM_PATH"
 		exit 0
 	fi
